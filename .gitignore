@@ -1,0 +1,9 @@
+logs/
+__pycache__/
+Data/
+train/
+test/
+training_set/
+.idea/
+*.csv
+preprocess.py
