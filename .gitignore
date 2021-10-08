@@ -3,6 +3,7 @@ __pycache__/
 Data/
 train/
 test/
+results/
 training_set/
 .idea/
 *.csv
