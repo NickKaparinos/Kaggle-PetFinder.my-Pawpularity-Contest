@@ -12,6 +12,45 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from efficientnet_pytorch import EfficientNet
+from sklearn.model_selection import KFold
+from sklearn.metrics import r2_score, mean_squared_error
+from math import sqrt
+import optuna
+
+
+def define_objective(regressor, img_data, metadata, y, kfolds, device):
+    def objective(trial):
+        hyperparameters = {}
+
+        if 'DecisionTree' in str(regressor):
+            hyperparameters['max_depth'] = trial.suggest_int('max_depth', 1, 50)
+            hyperparameters['min_samples_split'] = trial.suggest_int('min_samples_split', 2, 10)
+            hyperparameters['min_samples_leaf'] = trial.suggest_int('min_samples_leaf', 1, 10)
+            hyperparameters['splitter'] = trial.suggest_categorical('splitter', ["random", "best"])
+            hyperparameters['max_features'] = trial.suggest_categorical('max_features', ["auto", "sqrt"])
+
+        regressor.set_params(**hyperparameters)
+        model = sklearn_wrapper(head=regressor, device=device)
+
+        k_folds = kfolds
+        cv_results = []
+        kf = KFold(n_splits=k_folds)
+        for fold, (train_index, validation_index) in enumerate(kf.split(y)):
+            # Split data
+            X_train, y_train = (img_data[train_index], metadata[train_index]), y[train_index]
+            X_validation, y_validation = (img_data[validation_index], metadata[validation_index]), y[validation_index]
+
+            # Training
+            model.fit(X_train, y_train)
+
+            # Inference
+            y_pred = model.predict(X_validation)
+            rmse = sqrt(mean_squared_error(y_true=y_validation, y_pred=y_pred))
+            cv_results.append(rmse)
+
+        return sum(cv_results) / kfolds
+
+    return objective
 
 
 class sklearn_wrapper():
@@ -29,10 +68,10 @@ class sklearn_wrapper():
             self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
         x = self.model.extract_features(images.float())
         x = nn.Flatten()(x)
-        print(f'x shape before: {x.shape}')
-        print(f'metadata shape before: {metadata.shape}')
+        # print(f'x shape before: {x.shape}')
+        # print(f'metadata shape before: {metadata.shape}')
         X = torch.cat((x.to('cpu'), metadata), dim=1)
-        print(f'X shape after: {X.shape}')
+        # print(f'X shape after: {X.shape}')
         X = X.numpy()
         self.head.fit(X, y)
 
