@@ -7,4 +7,5 @@ results/
 training_set/
 .idea/
 *.csv
+*.txt
 preprocess.py

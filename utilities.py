@@ -14,57 +14,6 @@ import torch.nn as nn
 from efficientnet_pytorch import EfficientNet
 
 
-def preprocess_image(img_id, img_size, output_dir):
-    # Read, resize and save image
-    img_array = cv2.imread(f'train/{img_id}.jpg')
-    img_array = cv2.resize(img_array, (img_size, img_size))
-
-    # cv2.imshow('image_name', img_array)
-    # cv2.waitKey(0)
-
-    makedirs(output_dir, exist_ok=True)
-    image_saved = cv2.imwrite(output_dir + img_id + '.jpg', img_array)
-    if not image_saved:
-        print(f"Image {img_id} not saved !!!")
-
-
-def preprocess_data(img_size=175, validation_size=0.25):
-    # Read train.csv
-    # if validation:
-    #   calc training and validation ids and save in list
-    #
-    # for each training id:
-    #   read image
-    #   preprocess
-    #   and save in training_set_val or training_set
-    # Save training metadate to training_set directory
-    #
-    # for each validation id:
-    #   read image
-    #   preprocess
-    #   and save in validation_set
-
-    train_metadata = pd.read_csv('train.csv')
-    num_samples = train_metadata.shape[0]
-    do_validation = validation_size == 0.0
-
-    ids_permutations = np.random.permutation(train_metadata['Id'])
-    training_ids = ids_permutations[: int(np.floor((1 - validation_size) * num_samples))]
-    validation_ids = ids_permutations[int(np.floor((1 - validation_size) * num_samples)):]
-
-    # TODO: save training metadata to training_set folder, same for validaiton
-
-    for img_id in training_ids:
-        output_dir = 'training_set_noval/' if do_validation else 'training_set/'
-        preprocess_image(img_id=img_id, img_size=img_size, output_dir=output_dir)
-
-    for img_id in validation_ids:
-        output_dir = 'validation_set/'
-        preprocess_image(img_id=img_id, img_size=img_size, output_dir=output_dir)
-
-    return 5
-
-
 class sklearn_wrapper():
     def __init__(self, head, device, input_channels=3, print_shape=False):
         # Use efficientnet backbone
@@ -73,10 +22,6 @@ class sklearn_wrapper():
             param.requires_grad = False
         self.head = head
         self.device = device
-        self.__class__ = self.head.__class__
-
-        for key in self._get_param_names():
-            setattr(self, key, getattr(self.head, key))
 
     def fit(self, X, y):
         images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])

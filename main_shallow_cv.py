@@ -26,16 +26,14 @@ if __name__ == '__main__':
     img_size = 50
     img_data, metadata, y = load_data(img_size=img_size)
     metadata = metadata[:50]  # TODO remove debugging
+    X = (img_data, metadata)
     y = y[:50]
-    X = [img_data, metadata]
-    while len(X) != len(y):
-        X.append(0)
 
     # Regressor head
     regressor = DecisionTreeRegressor(random_state=0)
     # regressor = RandomForestregressor(random_state=0)
     # regressor = Baggingregressor(base_estimator=DecisionTreeregressor(random_state=0), random_state=0)
-    # # regressor = LogisticRegression(random_state=0)
+    # regressor = LogisticRegression(random_state=0)
     # regressor = SVC(random_state=0)
     # regressor = KNeighborsregressor()
     # regressor = MLPregressor(random_state=0)
@@ -46,6 +44,10 @@ if __name__ == '__main__':
 
     # Model
     model = sklearn_wrapper(head=regressor, device=device)
+    model.fit(X, y)
+    
+    pred = model.predict(X)
+    r2 = r2_score(y_true=y, y_pred=pred)    # TODO remove debugging
 
     # Hyper parameter grid
     param_grid = {}
@@ -100,14 +102,21 @@ if __name__ == '__main__':
                       'clf__min_samples_split': [2, 3, 4, 5]}
 
     # Cross validation
-    cv = KFold(n_splits=10, shuffle=True, random_state=0)
-    grid = GridSearchCV(model, param_grid=param_grid, cv=cv, n_jobs=5, verbose=2, scoring='accuracy',
-                        return_train_score=False, refit=True)
-    grid.fit(X, y)
+    k_folds = 4
+    cv_results = pd.DataFrame(columns=[f'fold_{i}' for i in range(k_folds)])
+    kf = KFold(n_splits=k_folds)
+    for fold, (train_index, validation_index) in enumerate(kf.split(y)):
+        # Split data
+        X_train, y_train = (img_data[train_index], metadata[train_index]), y[train_index]
+        X_validation, y_validation = (img_data[validation_index], metadata[validation_index]), y[validation_index]
 
-    # Results
-    cv_results = pd.DataFrame(grid.cv_results_)
-    print(cv_results)
+        # Training
+        model.fit(X_train, y_train)
+
+        # Inference
+        y_pred = model.predict(X_validation)
+        r2_val = r2_score(y_validation, y_pred)
+        cv_results[f'fold_{fold}'] = [r2_val]
 
     # Execution Time
     end = time.perf_counter()
