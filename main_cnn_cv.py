@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from os import makedirs
 from os import makedirs
+from pickle import dump
 import logging
 import sys
 
@@ -29,11 +30,10 @@ if __name__ == '__main__':
 
     # Tensorboard
     time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
-    LOG_DIR = 'logs/cnn' + time_stamp
-    makedirs(f'results/{time_stamp}/')
+    LOG_DIR = 'logs/cnn' + time_stamp + '/'
     writer = SummaryWriter(log_dir=LOG_DIR)
 
-    epochs = 6
+    epochs = 2
     k_folds = 4
     img_size = 40
     n_debug_images = 50
@@ -43,31 +43,38 @@ if __name__ == '__main__':
     y = y[:n_debug_images]
 
     # Hyperparameter optimisation
+    study_name = f'cnn_study_{time_stamp}'
     objective = define_objective_cnn(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
                                      writer=writer, device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
-    study = optuna.create_study(study_name=f'cnn_study_{time_stamp}', direction='minimize',
-                                pruner=optuna.pruners.MedianPruner())
-    study.optimize(objective, n_trials=None, timeout=5*60)
+    study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
+                                direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
+                                storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
+    study.optimize(objective, n_trials=None, timeout=20)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
+    # Save results
+    results_dict = {'Best_hyperparameters': study.best_params, 'Best_value': study.best_value, 'study_name': study_name,
+                    'log_dir': LOG_DIR}
+    save_dict_to_file(results_dict, LOG_DIR, txt_name='study_results')
+    df = study.trials_dataframe()
+    df.to_csv(LOG_DIR + "study_results.csv")
+
     # Plot study results
-    fig = optuna.visualization.plot_optimization_history(study)
-    fig.write_image(f"results/{time_stamp}/optimization_history.png")
-    fig.show()
-    fig2 = optuna.visualization.plot_intermediate_values(study)
-    fig2.write_image(f"results/{time_stamp}/intermediate_values.png")
-    fig2.show()
-    fig3 = optuna.visualization.plot_parallel_coordinate(study)
-    fig3.write_image(f"results/{time_stamp}/parallel_coordinate.png")
-    fig3.show()
-    fig4 = optuna.visualization.plot_contour(study)
-    fig4.write_image(f"results/{time_stamp}/contour.png")
-    fig4.show()
-    fig5 = optuna.visualization.plot_param_importances(study)
-    fig5.write_image(f"results/{time_stamp}/param_importances.png")
-    fig5.show()
+    plots = [(optuna.visualization.plot_optimization_history, "optimization_history.png"),
+             (optuna.visualization.plot_intermediate_values, "intermediate_values.png"),
+             (optuna.visualization.plot_parallel_coordinate, "parallel_coordinate.png"),
+             (optuna.visualization.plot_contour, "contour.png"),
+             (optuna.visualization.plot_param_importances, "param_importances.png")]
+    figs = []
+    for plot_function, plot_name in plots:
+        fig = plot_function(study)
+        figs.append(fig)
+        fig.write_image(LOG_DIR + plot_name)
+        fig.show()
+    with open(LOG_DIR + 'result_figures.pkl', 'wb') as f:
+        dump(figs, f)
 
     # Execution Time # tensorboard --logdir "Petfinder-Pawpularity\logs"
     end = time.perf_counter()

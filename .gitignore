@@ -8,4 +8,5 @@ training_set/
 .idea/
 *.csv
 *.txt
+*.db
 preprocess.py

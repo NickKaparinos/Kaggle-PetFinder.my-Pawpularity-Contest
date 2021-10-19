@@ -295,3 +295,8 @@ def pytorch_test_loop(dataloader, model, loss_fn, writer, epoch, device) -> floa
     writer.add_scalar('test_rmse', test_rmse, epoch)
     # print(f"Test Error: RMSE {(test_rmse):>0.8f}%\n")
     return test_rmse
+
+def save_dict_to_file(dict, path, txt_name='hyperparameter_dict'):
+    f = open(path + '/' + txt_name + '.txt', 'w')
+    f.write(str(dict))
+    f.close()
