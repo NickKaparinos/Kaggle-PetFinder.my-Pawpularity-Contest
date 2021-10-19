@@ -14,6 +14,9 @@ from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 import seaborn as sns
 from os import makedirs
+from os import makedirs
+import logging
+import sys
 
 if __name__ == '__main__':
     start = time.perf_counter()
@@ -25,65 +28,47 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     # Tensorboard
-    LOG_DIR = 'logs/pytorch'
+    time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
+    LOG_DIR = 'logs/cnn' + time_stamp
+    makedirs(f'results/{time_stamp}/')
     writer = SummaryWriter(log_dir=LOG_DIR)
 
-    epochs = 5
-    img_size = 50
-    img_data, metadata, y = load_data(img_size=img_size)
-
-    # Cross validation
+    epochs = 6
     k_folds = 4
-    cv_results = pd.DataFrame(columns=[f'fold_{i}' for i in range(k_folds)])
-    kf = KFold(n_splits=k_folds)
-    for fold, (train_index, validation_index) in enumerate(kf.split(y)):
-        print(f'Fold {fold}')
-        # Split data
-        img_data_train, metadata_train, y_train = img_data[train_index], metadata[train_index], y[train_index]
-        img_data_validation, metadata_validation, y_validation = img_data[validation_index], metadata[validation_index], \
-                                                                 y[validation_index]
+    img_size = 40
+    n_debug_images = 50
+    img_data, metadata, y = load_data(img_size=img_size)
+    metadata = metadata[:n_debug_images]  # TODO remove debugging
+    X = (img_data, metadata)
+    y = y[:n_debug_images]
 
-        # Datasets
-        training_dataset = PawpularityDataset(img_data_train, metadata_train, y_train)
-        validation_dataset = PawpularityDataset(img_data_validation, metadata_validation, y_validation)
+    # Hyperparameter optimisation
+    objective = define_objective_cnn(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
+                                     writer=writer, device=device)
+    optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
+    study = optuna.create_study(study_name=f'cnn_study_{time_stamp}', direction='minimize',
+                                pruner=optuna.pruners.MedianPruner())
+    study.optimize(objective, n_trials=None, timeout=5*60)
+    print(f'Best hyperparameters: {study.best_params}')
+    print(f'Best value: {study.best_value}')
 
-        # Dataloders
-        training_dataloader = DataLoader(dataset=training_dataset, batch_size=8, shuffle=True, num_workers=2,
-                                         prefetch_factor=2)
-        validation_dataloader = DataLoader(dataset=validation_dataset, batch_size=8, shuffle=True, num_workers=2,
-                                           prefetch_factor=2)
+    # Plot study results
+    fig = optuna.visualization.plot_optimization_history(study)
+    fig.write_image(f"results/{time_stamp}/optimization_history.png")
+    fig.show()
+    fig2 = optuna.visualization.plot_intermediate_values(study)
+    fig2.write_image(f"results/{time_stamp}/intermediate_values.png")
+    fig2.show()
+    fig3 = optuna.visualization.plot_parallel_coordinate(study)
+    fig3.write_image(f"results/{time_stamp}/parallel_coordinate.png")
+    fig3.show()
+    fig4 = optuna.visualization.plot_contour(study)
+    fig4.write_image(f"results/{time_stamp}/contour.png")
+    fig4.show()
+    fig5 = optuna.visualization.plot_param_importances(study)
+    fig5.write_image(f"results/{time_stamp}/param_importances.png")
+    fig5.show()
 
-        # Model
-        model = effnet_model().to(device)
-        learning_rate = 1e-3
-
-        loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-        fold_results = []
-        for epoch in range(epochs):
-            print(f"-----------------Epoch {epoch + 1}-----------------")
-            pytorch_train_loop(training_dataloader, y_train.shape[0], model, loss_fn, optimizer, writer, epoch, device)
-            test_rmse = pytorch_test_loop(validation_dataloader, y_validation.shape[0], model, loss_fn, writer, epoch,
-                                          device)
-            fold_results.append(test_rmse)
-        cv_results[f'fold_{fold}'] = fold_results
-    cv_results.index = [i for i in range(cv_results.shape[0])]
-
-    # Plot cross validation results per epoch
-    makedirs('results', exist_ok=True)
-    print(cv_results)
-    sns.set()
-    fig = plt.figure(1)
-    for i in range(k_folds):
-        sns.lineplot(x=cv_results.index, y=f'fold_{i}', data=cv_results)
-    plt.xlabel('Epochs')
-    plt.ylabel('RMSE')
-    plt.title('Cross validation results')
-    plt.legend(cv_results.columns)
-    plt.savefig('results/cv_results.png')
-    plt.show()
-
-    # Execution Time # tensorboard --logdir "Google Landmark Recognition 2021\logs"
+    # Execution Time # tensorboard --logdir "Petfinder-Pawpularity\logs"
     end = time.perf_counter()
     print(f"\nExecution time = {end - start:.2f} second(s)")

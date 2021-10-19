@@ -23,11 +23,12 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    img_size = 50
+    img_size = 60
+    n_debug_images = 500
     img_data, metadata, y = load_data(img_size=img_size)
-    metadata = metadata[:50]  # TODO remove debugging
+    metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
-    y = y[:50]
+    y = y[:n_debug_images]
 
     # Regressor head
     regressor = DecisionTreeRegressor(random_state=0)
@@ -43,18 +44,18 @@ if __name__ == '__main__':
     # regressor = GradientBoostingregressor(random_state=0)
 
     # Model
-    model = sklearn_wrapper(head=regressor, device=device)
+    model = SKlearnWrapper(head=regressor, device=device)
     model.fit(X, y)
 
-    pred = model.predict(X)
-    r2 = r2_score(y_true=y, y_pred=pred)  # TODO remove debugging
+    # pred = model.predict(X)
+    # r2 = r2_score(y_true=y, y_pred=pred)  # TODO remove debugging
 
     # Hyperparameter optimisation
     objective = define_objective(DecisionTreeRegressor(random_state=0), img_data=img_data, metadata=metadata, y=y,
                                  kfolds=5, device=device)
 
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=100, timeout=20)
+    study.optimize(objective, n_trials=5, timeout=20)
     print(study.best_params)
     print(study.best_value)
 
