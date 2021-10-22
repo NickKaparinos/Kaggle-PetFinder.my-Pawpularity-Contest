@@ -6,6 +6,7 @@ test/
 results/
 training_set/
 .idea/
+venv/
 *.csv
 *.txt
 *.db

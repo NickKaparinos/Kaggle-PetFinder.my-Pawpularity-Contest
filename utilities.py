@@ -119,7 +119,7 @@ class SKlearnWrapper():
 
     def fit(self, X, y):
         images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])
-        images = images.permute(0, 3, 2, 1).to(
+        images = images.permute(0, 3, 1, 2).to(
             self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
         x = self.model.extract_features(images.float())
         x = nn.Flatten()(x)
@@ -132,7 +132,7 @@ class SKlearnWrapper():
 
     def predict(self, X):
         images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])
-        images = images.permute(0, 3, 2, 1).to(
+        images = images.permute(0, 3, 1, 2).to(
             self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
         x = self.model.extract_features(images.float())
         x = nn.Flatten()(x)
@@ -188,7 +188,8 @@ class EffnetModel(nn.Module):
         self.model = EfficientNet.from_pretrained('efficientnet-b0')
         for param in self.model.parameters():
             param.requires_grad = False
-        self.fc1 = nn.Linear(1292, 256)
+        self.fc1 = nn.LazyLinear(256)
+        # self.fc1 = nn.Linear(1292, 256)
         self.fc2 = nn.Linear(256, 256)
         self.output_layer = nn.Linear(256, 1)
 
@@ -251,7 +252,7 @@ def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, writer, epoc
         images, metadata, y = X
         metadata = metadata.to(device)
         y = y.to(device)
-        images = images.permute(0, 3, 2, 1).to(
+        images = images.permute(0, 3, 1, 2).to(
             device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
         # Calculate loss function
@@ -283,7 +284,7 @@ def pytorch_test_loop(dataloader, model, loss_fn, writer, epoch, device) -> floa
             images, metadata, y = X
             metadata = metadata.to(device)
             y = y.to(device)
-            images = images.permute(0, 3, 2, 1).to(
+            images = images.permute(0, 3, 1, 2).to(
                 device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
             # Calculate loss function
