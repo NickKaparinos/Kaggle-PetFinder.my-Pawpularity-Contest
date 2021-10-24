@@ -41,8 +41,10 @@ if __name__ == '__main__':
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'
+    notes = 'optimizer:Adam'
     objective = define_objective_neural_net(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
-                                            hypermodel=EffnetOptunaHypermodel, device=device)
+                                            hypermodel=EffnetOptunaHypermodel, model_type='cnn', notes=notes,
+                                            device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),

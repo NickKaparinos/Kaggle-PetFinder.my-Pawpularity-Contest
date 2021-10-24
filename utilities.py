@@ -59,7 +59,7 @@ def define_objective(regressor, img_data, metadata, y, kfolds, device):
     return objective
 
 
-def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermodel, device):
+def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermodel, model_type, notes, device):
     def objective(trial):
         kf = KFold(n_splits=k_folds)
         loss_fn = torch.nn.MSELoss()
@@ -67,16 +67,14 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermod
         validation_dataloaders = []
         optimizers = []
         fold_train_sizes = []
+        learning_rate = 1e-3
 
         # Models
-        n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
-        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        model_list = [hypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
-                      range(k_folds)]
-
-        name = f'cnn_b0_neurons{n_neurons},layers{n_linear_layers}'
-        config = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
-        wandb.init(project="pawpularity-cnn", entity="nickkaparinos", name=name, config=config, reinit=True)
+        model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, hypermodel=hypermodel,
+                                                          k_folds=k_folds, device=device)
+        config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate}
+        wandb.init(project=f"pawpularity-{model_type}", entity="nickkaparinos", name=name, config=config, notes=notes,
+                   group=model_type, reinit=True)
 
         for fold, (train_index, validation_index) in enumerate(kf.split(y)):
             # Split data
@@ -94,7 +92,6 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermod
                 DataLoader(dataset=training_dataset, batch_size=8, shuffle=True, num_workers=2, prefetch_factor=2))
             validation_dataloaders.append(
                 DataLoader(dataset=validation_dataset, batch_size=8, shuffle=True, num_workers=2, prefetch_factor=2))
-            learning_rate = 1e-3
             optimizers.append(torch.optim.Adam(model_list[fold].parameters(), lr=learning_rate))
 
         for epoch in tqdm(range(epochs)):
@@ -351,6 +348,21 @@ def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
     val_rmse = np.sqrt(mean_squared_error(y_list, y_pred_list))
     val_r2 = r2_score(y_list, y_pred_list)
     return val_rmse, val_r2
+
+
+def create_models(model_type, trial, hypermodel, k_folds, device):
+    """ Create and return a model list """
+    if model_type == 'cnn':
+        n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
+        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
+        model_list = [hypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+                      range(k_folds)]
+
+        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
+        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
+        return model_list, name, hyperparamers
+    else:
+        raise ValueError(f"Model type {model_type} not supported!")
 
 
 def score(X_train, y_train, X_validation, y_validation, model) -> float:
