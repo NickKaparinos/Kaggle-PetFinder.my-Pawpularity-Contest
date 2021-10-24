@@ -7,6 +7,7 @@ results/
 training_set/
 .idea/
 venv/
+wandb/
 *.csv
 *.txt
 *.db

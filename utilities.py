@@ -6,7 +6,9 @@ Nick Kaparinos
 """
 import pandas as pd
 import numpy as np
+import wandb
 import cv2
+import timm
 from tqdm import tqdm
 import optuna
 import torch
@@ -17,31 +19,28 @@ from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from joblib import Parallel, delayed
+from statistics import mean
 from copy import deepcopy
 from math import sqrt
-
-
-def score(X_train, y_train, X_validation, y_validation, model) -> float:
-    # Training
-    model.fit(X_train, y_train)
-
-    # Inference
-    y_pred = model.predict(X_validation)
-    rmse = sqrt(mean_squared_error(y_true=y_validation, y_pred=y_pred))
-    return rmse
 
 
 def define_objective(regressor, img_data, metadata, y, kfolds, device):
     def objective(trial):
         hyperparameters = {}
+        model_name = str(regressor)
 
-        if 'DecisionTree' in str(regressor):
+        if 'DecisionTree' in model_name:
+            model_name = 'DecisionTree'
             hyperparameters['max_depth'] = trial.suggest_int('max_depth', 1, 50)
             hyperparameters['min_samples_split'] = trial.suggest_int('min_samples_split', 2, 10)
             hyperparameters['min_samples_leaf'] = trial.suggest_int('min_samples_leaf', 1, 10)
             hyperparameters['splitter'] = trial.suggest_categorical('splitter', ["random", "best"])
             hyperparameters['max_features'] = trial.suggest_categorical('max_features', ["auto", "sqrt"])
 
+        name = (model_name + str(hyperparameters)).replace(' ', '')
+        print(f"model name = {model_name}")
+        wandb.init(project="pawpularity-shallow", entity="nickkaparinos", name=name, config=hyperparameters,
+                   reinit=True, group=model_name)
         regressor.set_params(**hyperparameters)
         model = SKlearnWrapper(head=regressor, device=device)
 
@@ -52,23 +51,33 @@ def define_objective(regressor, img_data, metadata, y, kfolds, device):
             delayed(score)((img_data[train_index], metadata[train_index]), y[train_index],
                            (img_data[validation_index], metadata[validation_index]), y[validation_index],
                            deepcopy(model)) for train_index, validation_index in kf.split(y))
-
-        return sum(cv_results) / kfolds
+        average_rmse = mean([i[0] for i in cv_results])
+        r2_results = mean([i[1] for i in cv_results])
+        wandb.log(data={'RMSE': average_rmse, 'R2': r2_results})
+        return average_rmse
 
     return objective
 
 
-def define_objective_cnn(img_data, metadata, y, k_folds, epochs, writer, device):
+def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermodel, device):
     def objective(trial):
-        # hyperparameters = {}
-
         kf = KFold(n_splits=k_folds)
-        model_list = [EffnetOptunaHypermodel(trial=trial).to(device) for i in range(k_folds)]
         loss_fn = torch.nn.MSELoss()
         training_dataloaders = []
         validation_dataloaders = []
         optimizers = []
         fold_train_sizes = []
+
+        # Models
+        n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
+        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
+        model_list = [hypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+                      range(k_folds)]
+
+        name = f'cnn_b0_neurons{n_neurons},layers{n_linear_layers}'
+        config = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
+        wandb.init(project="pawpularity-cnn", entity="nickkaparinos", name=name, config=config, reinit=True)
+
         for fold, (train_index, validation_index) in enumerate(kf.split(y)):
             # Split data
             img_data_train, metadata_train, y_train = img_data[train_index], metadata[train_index], y[train_index]
@@ -89,21 +98,27 @@ def define_objective_cnn(img_data, metadata, y, k_folds, epochs, writer, device)
             optimizers.append(torch.optim.Adam(model_list[fold].parameters(), lr=learning_rate))
 
         for epoch in tqdm(range(epochs)):
-            epoch_results = []
+            train_rmse_list = []
+            train_r2_list = []
+            val_rmse_list = []
+            val_r2_list = []
             for fold in range(k_folds):
-                pytorch_train_loop(training_dataloaders[fold], fold_train_sizes[fold], model_list[fold], loss_fn,
-                                   optimizers[fold], writer, epoch, device)
-                test_rmse = pytorch_test_loop(validation_dataloaders[fold], model_list[fold], loss_fn, writer, epoch,
-                                              device)
-                epoch_results.append(test_rmse)
-            epoch_average_result = sum(epoch_results) / k_folds
-
+                train_rmse, train_r2 = pytorch_train_loop(training_dataloaders[fold], fold_train_sizes[fold],
+                                                          model_list[fold], loss_fn, optimizers[fold], epoch, device)
+                val_rmse, val_r2 = pytorch_test_loop(validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
+                                                     device)
+                val_rmse_list.append(val_rmse)
+                val_r2_list.append(val_r2)
+                train_rmse_list.append(train_rmse)
+                train_r2_list.append(train_r2)
+            val_average_rmse = mean(val_rmse_list)
+            wandb.log(data={'Epoch': epoch, 'Training_RMSE': mean(train_rmse_list), 'Training_R2': mean(train_r2_list),
+                            'Validation_RMSE': val_average_rmse, 'Validation_R2': mean(val_r2_list)})
             # Pruning
-            trial.report(epoch_average_result, epoch)
+            trial.report(val_average_rmse, epoch)
             if trial.should_prune():
                 raise optuna.TrialPruned()
-
-        return epoch_average_result
+        return val_average_rmse
 
     return objective
 
@@ -148,15 +163,46 @@ class SKlearnWrapper():
         self.head.set_params(**params)
 
 
-class EffnetOptunaHypermodel(nn.Module):
+class SwinOptunaHypermodel(nn.Module):
     def __init__(self, trial, input_channels=3):
         super().__init__()
-        # Use efficientnet
+        self.swin = timm.create_model('swin_base_patch4_window7_224', pretrained=True)
+        self.swin.patch_embed = timm.models.layers.patch_embed.PatchEmbed(patch_size=4, embed_dim=128,
+                                                                          norm_layer=nn.LayerNorm)
+
+        n_linear_layers = trial.suggest_int('n_linear_layers', 1, 4)
+        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
+        self.fc1 = nn.LazyLinear(n_neurons)
+        self.temp_layers = []
+        for _ in range(n_linear_layers):
+            self.temp_layers.append(nn.Linear(n_neurons, n_neurons))
+        self.linear_layers = nn.ModuleList(self.temp_layers)
+        self.output_layer = nn.Linear(n_neurons, 1)
+
+    def forward(self, x):
+        images, metadata = x
+        x = self.model.extract_features(images)
+        x = nn.Flatten()(x)
+        # print(f'x shape before: {x.shape}')
+        # print(f'metadata shape before: {metadata.shape}')
+        x = torch.cat((x, metadata), dim=1)
+        # print(f'x shape after: {x.shape}')
+        x = self.fc1(x)
+        x = nn.ReLU()(x)
+        for i in range(len(self.linear_layers)):
+            x = self.linear_layers[i](x)
+            x = nn.ReLU()(x)
+        x = self.output_layer(x)
+        return x
+
+
+class EffnetOptunaHypermodel(nn.Module):
+    def __init__(self, n_linear_layers, n_neurons, input_channels=3):
+        super().__init__()
         self.model = EfficientNet.from_pretrained('efficientnet-b0')
         for param in self.model.parameters():
             param.requires_grad = False
-        n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
-        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
+        # self.fc1 = nn.LazyLinear(n_neurons)
         self.fc1 = nn.Linear(1292, n_neurons)
         self.temp_layers = []
         for _ in range(n_linear_layers):
@@ -245,9 +291,10 @@ def load_data(img_size=256) -> tuple:
     return img_data, metadata, y
 
 
-def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, writer, epoch, device):
+def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, epoch, device) -> tuple:
     running_loss = 0.0
-
+    y_list = []
+    y_pred_list = []
     for batch, X in enumerate(dataloader):
         images, metadata, y = X
         metadata = metadata.to(device)
@@ -258,27 +305,29 @@ def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, writer, epoc
         # Calculate loss function
         y_pred = model((images, metadata))
         loss = loss_fn(y_pred, y.view(-1, 1))
+        y_list.extend(y.to('cpu').tolist())
+        y_pred_list.extend(y_pred[:, 0].to('cpu').tolist())
 
         # Back propagation
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # Calculate and save metrics
         running_loss += loss.item()
         if batch % 100 == 0:
-            loss, current = loss.item(), batch * len(X)
-            writer.add_scalar('training_loss', running_loss / 1000, epoch * len(dataloader) + batch)
+            wandb.log(data={'Epoch': epoch, 'Training_loss': running_loss / 100})
+            running_loss = 0.0
 
-            # print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
-    average_rmse = np.sqrt(running_loss / size)
-    writer.add_scalar('RMSE loss', average_rmse, epoch + 1)
-    # print(f"Train Error:  RMSE: {average_rmse:>0.8f}%\n")
+    # Calculate and save metrics
+    train_rmse = np.sqrt(mean_squared_error(y_list, y_pred_list))
+    train_r2 = r2_score(y_list, y_pred_list)
+    return train_rmse, train_r2
 
 
-def pytorch_test_loop(dataloader, model, loss_fn, writer, epoch, device) -> float:
-    test_loss = 0.0
-
+def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
+    running_loss = 0.0
+    y_list = []
+    y_pred_list = []
     with torch.no_grad():
         for batch, X in enumerate(dataloader):
             images, metadata, y = X
@@ -289,13 +338,31 @@ def pytorch_test_loop(dataloader, model, loss_fn, writer, epoch, device) -> floa
 
             # Calculate loss function
             y_pred = model((images, metadata))
-            test_loss += loss_fn(y_pred, y.view(-1, 1)).item()
+            loss = loss_fn(y_pred, y.view(-1, 1))
+            y_list.extend(y.to('cpu').tolist())
+            y_pred_list.extend(y_pred[:, 0].to('cpu').tolist())
+
+            running_loss += loss.item()
+            if batch % 100 == 0:
+                wandb.log(data={'Epoch': epoch, 'Validation_loss': running_loss / 100})
+                running_loss = 0.0
 
     # Calculate and save metrics
-    test_rmse = np.sqrt(test_loss)
-    writer.add_scalar('test_rmse', test_rmse, epoch)
-    # print(f"Test Error: RMSE {(test_rmse):>0.8f}%\n")
-    return test_rmse
+    val_rmse = np.sqrt(mean_squared_error(y_list, y_pred_list))
+    val_r2 = r2_score(y_list, y_pred_list)
+    return val_rmse, val_r2
+
+
+def score(X_train, y_train, X_validation, y_validation, model) -> float:
+    # Training
+    model.fit(X_train, y_train)
+
+    # Inference
+    y_pred = model.predict(X_validation)
+    val_rmse = sqrt(mean_squared_error(y_true=y_validation, y_pred=y_pred))
+    val_r2 = r2_score(y_validation, y_pred)
+    return val_rmse, val_r2
+
 
 def save_dict_to_file(dict, path, txt_name='hyperparameter_dict'):
     f = open(path + '/' + txt_name + '.txt', 'w')

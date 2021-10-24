@@ -8,12 +8,8 @@ import torch
 from utilities import *
 import time
 import torch
-from sklearn.model_selection import KFold
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 import seaborn as sns
-from os import makedirs
 from os import makedirs
 from pickle import dump
 import logging
@@ -25,15 +21,16 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Tensorboard
     time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
     LOG_DIR = 'logs/cnn' + time_stamp + '/'
-    writer = SummaryWriter(log_dir=LOG_DIR)
+    makedirs(LOG_DIR, exist_ok=True)
 
-    epochs = 2
+    epochs = 4
     k_folds = 4
     img_size = 40
     n_debug_images = 50
@@ -44,13 +41,13 @@ if __name__ == '__main__':
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'
-    objective = define_objective_cnn(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
-                                     writer=writer, device=device)
+    objective = define_objective_neural_net(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
+                                            hypermodel=EffnetOptunaHypermodel, device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
                                 storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
-    study.optimize(objective, n_trials=None, timeout=20)
+    study.optimize(objective, n_trials=None, timeout=25)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
@@ -72,7 +69,7 @@ if __name__ == '__main__':
         fig = plot_function(study)
         figs.append(fig)
         fig.write_image(LOG_DIR + plot_name)
-        fig.show()
+        # fig.show()
     with open(LOG_DIR + 'result_figures.pkl', 'wb') as f:
         dump(figs, f)
 

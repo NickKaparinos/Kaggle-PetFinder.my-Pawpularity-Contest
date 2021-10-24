@@ -33,8 +33,9 @@ if __name__ == '__main__':
     epochs = 2
     k_folds = 4
     img_size = 224
-    n_debug_images = 50
+    n_debug_images = 4
     img_data, metadata, y = load_data(img_size=img_size)
+    img_data = img_data[:n_debug_images]
     metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
     y = y[:n_debug_images]
@@ -42,7 +43,9 @@ if __name__ == '__main__':
     X_img = torch.Tensor(X[0]).to(device)
     X_img = X_img.permute(0, 3, 1, 2).to(device)
 
-    fet = swin(X_img)
+    x = swin(X_img)
+    x = x[:,-1]
+    x = torch.cat((x, metadata), dim=1)
 
     # Execution Time
     end = time.perf_counter()

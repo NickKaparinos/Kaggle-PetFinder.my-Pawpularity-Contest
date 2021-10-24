@@ -7,9 +7,9 @@ Nick Kaparinos
 
 from utilities import *
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, KFold
+from os import makedirs
 import pandas as pd
-from sklearn.metrics import r2_score
+from pickle import dump
 import time
 
 if __name__ == '__main__':
@@ -20,11 +20,16 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = 'cpu'
     print(f"Using device: {device}")
+    time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
+    LOG_DIR = 'logs/shallow' + time_stamp + '/'
+    makedirs(LOG_DIR, exist_ok=True)
 
-    img_size = 60
-    n_debug_images = 500
+    img_size = 50
+    n_debug_images = 50
     img_data, metadata, y = load_data(img_size=img_size)
     metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
@@ -47,17 +52,37 @@ if __name__ == '__main__':
     model = SKlearnWrapper(head=regressor, device=device)
     model.fit(X, y)
 
-    # pred = model.predict(X)
-    # r2 = r2_score(y_true=y, y_pred=pred)  # TODO remove debugging
-
     # Hyperparameter optimisation
+    study_name = f'cnn_study_{time_stamp}'
     objective = define_objective(DecisionTreeRegressor(random_state=0), img_data=img_data, metadata=metadata, y=y,
                                  kfolds=5, device=device)
-
-    study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=5, timeout=20)
+    study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
+                                direction='minimize', storage=f'sqlite:///{LOG_DIR}{study_name}.db',
+                                load_if_exists=True)
+    study.optimize(objective, n_trials=15, timeout=25)
     print(study.best_params)
     print(study.best_value)
+
+    # Save results
+    results_dict = {'Best_hyperparameters': study.best_params, 'Best_value': study.best_value, 'study_name': study_name,
+                    'log_dir': LOG_DIR}
+    save_dict_to_file(results_dict, LOG_DIR, txt_name='study_results')
+    df = study.trials_dataframe()
+    df.to_csv(LOG_DIR + "study_results.csv")
+
+    # Plot study results
+    plots = [(optuna.visualization.plot_optimization_history, "optimization_history.png"),
+             (optuna.visualization.plot_parallel_coordinate, "parallel_coordinate.png"),
+             (optuna.visualization.plot_contour, "contour.png"),
+             (optuna.visualization.plot_param_importances, "param_importances.png")]
+    figs = []
+    for plot_function, plot_name in plots:
+        fig = plot_function(study)
+        figs.append(fig)
+        fig.write_image(LOG_DIR + plot_name)
+        # fig.show()
+    with open(LOG_DIR + 'result_figures.pkl', 'wb') as f:
+        dump(figs, f)
 
     # Execution Time
     end = time.perf_counter()
