@@ -51,15 +51,17 @@ def define_objective(regressor, img_data, metadata, y, kfolds, device):
             delayed(score)((img_data[train_index], metadata[train_index]), y[train_index],
                            (img_data[validation_index], metadata[validation_index]), y[validation_index],
                            deepcopy(model)) for train_index, validation_index in kf.split(y))
-        average_rmse = mean([i[0] for i in cv_results])
-        r2_results = mean([i[1] for i in cv_results])
-        wandb.log(data={'RMSE': average_rmse, 'R2': r2_results})
+        val_rmse_list = [i[0] for i in cv_results]
+        average_rmse = mean(val_rmse_list)
+        val_r2_list = [i[1] for i in cv_results]
+        wandb.log(data={'Mean Validation RMSE': average_rmse, 'Folds Validation RMSE': val_rmse_list,
+                        'Mean Validation R2': mean(val_r2_list), 'Fold Validation R2': val_r2_list})
         return average_rmse
 
     return objective
 
 
-def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermodel, model_type, notes, device):
+def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_type, notes, device):
     def objective(trial):
         kf = KFold(n_splits=k_folds)
         loss_fn = torch.nn.MSELoss()
@@ -68,11 +70,13 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermod
         optimizers = []
         fold_train_sizes = []
         learning_rate = 1e-3
+        batch_size = 1
 
         # Models
-        model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, hypermodel=hypermodel,
-                                                          k_folds=k_folds, device=device)
-        config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate}
+        model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, k_folds=k_folds,
+                                                          device=device)
+        config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
+                                    'batch_size': batch_size}
         wandb.init(project=f"pawpularity-{model_type}", entity="nickkaparinos", name=name, config=config, notes=notes,
                    group=model_type, reinit=True)
 
@@ -89,9 +93,11 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermod
 
             # Dataloders
             training_dataloaders.append(
-                DataLoader(dataset=training_dataset, batch_size=8, shuffle=True, num_workers=2, prefetch_factor=2))
+                DataLoader(dataset=training_dataset, batch_size=batch_size, shuffle=True, num_workers=2,
+                           prefetch_factor=2))
             validation_dataloaders.append(
-                DataLoader(dataset=validation_dataset, batch_size=8, shuffle=True, num_workers=2, prefetch_factor=2))
+                DataLoader(dataset=validation_dataset, batch_size=batch_size, shuffle=True, num_workers=2,
+                           prefetch_factor=2))
             optimizers.append(torch.optim.Adam(model_list[fold].parameters(), lr=learning_rate))
 
         for epoch in tqdm(range(epochs)):
@@ -109,8 +115,9 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, hypermod
                 train_rmse_list.append(train_rmse)
                 train_r2_list.append(train_r2)
             val_average_rmse = mean(val_rmse_list)
-            wandb.log(data={'Epoch': epoch, 'Training_RMSE': mean(train_rmse_list), 'Training_R2': mean(train_r2_list),
-                            'Validation_RMSE': val_average_rmse, 'Validation_R2': mean(val_r2_list)})
+            wandb.log(data={'Epoch': epoch, 'Mean Training RMSE': mean(train_rmse_list), 'Mean Training R2': mean(train_r2_list),
+                            'Mean Validation RMSE': val_average_rmse, 'Folds Validation RMSE': val_rmse_list,
+                            'Mean Validation R2': mean(val_r2_list), 'Fold Validation R2': val_r2_list})
             # Pruning
             trial.report(val_average_rmse, epoch)
             if trial.should_prune():
@@ -161,14 +168,11 @@ class SKlearnWrapper():
 
 
 class SwinOptunaHypermodel(nn.Module):
-    def __init__(self, trial, input_channels=3):
+    def __init__(self, n_linear_layers, n_neurons, input_channels=3):
         super().__init__()
         self.swin = timm.create_model('swin_base_patch4_window7_224', pretrained=True)
         self.swin.patch_embed = timm.models.layers.patch_embed.PatchEmbed(patch_size=4, embed_dim=128,
                                                                           norm_layer=nn.LayerNorm)
-
-        n_linear_layers = trial.suggest_int('n_linear_layers', 1, 4)
-        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
         self.fc1 = nn.LazyLinear(n_neurons)
         self.temp_layers = []
         for _ in range(n_linear_layers):
@@ -178,12 +182,9 @@ class SwinOptunaHypermodel(nn.Module):
 
     def forward(self, x):
         images, metadata = x
-        x = self.model.extract_features(images)
+        x = self.swin(images)
         x = nn.Flatten()(x)
-        # print(f'x shape before: {x.shape}')
-        # print(f'metadata shape before: {metadata.shape}')
         x = torch.cat((x, metadata), dim=1)
-        # print(f'x shape after: {x.shape}')
         x = self.fc1(x)
         x = nn.ReLU()(x)
         for i in range(len(self.linear_layers)):
@@ -199,8 +200,7 @@ class EffnetOptunaHypermodel(nn.Module):
         self.model = EfficientNet.from_pretrained('efficientnet-b0')
         for param in self.model.parameters():
             param.requires_grad = False
-        # self.fc1 = nn.LazyLinear(n_neurons)
-        self.fc1 = nn.Linear(1292, n_neurons)
+        self.fc1 = nn.LazyLinear(n_neurons)
         self.temp_layers = []
         for _ in range(n_linear_layers):
             self.temp_layers.append(nn.Linear(n_neurons, n_neurons))
@@ -350,12 +350,21 @@ def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
     return val_rmse, val_r2
 
 
-def create_models(model_type, trial, hypermodel, k_folds, device):
+def create_models(model_type, trial, k_folds, device):
     """ Create and return a model list """
     if model_type == 'cnn':
         n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        model_list = [hypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+        model_list = [EffnetOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+                      range(k_folds)]
+
+        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
+        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
+        return model_list, name, hyperparamers
+    elif model_type == 'swin':
+        n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
+        n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
+        model_list = [SwinOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
                       range(k_folds)]
 
         name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'

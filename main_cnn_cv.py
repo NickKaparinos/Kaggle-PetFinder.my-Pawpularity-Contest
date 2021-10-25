@@ -25,12 +25,12 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Tensorboard
+    # Log directory
     time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
     LOG_DIR = 'logs/cnn' + time_stamp + '/'
     makedirs(LOG_DIR, exist_ok=True)
 
-    epochs = 4
+    epochs = 3
     k_folds = 4
     img_size = 40
     n_debug_images = 50
@@ -43,13 +43,12 @@ if __name__ == '__main__':
     study_name = f'cnn_study_{time_stamp}'
     notes = 'optimizer:Adam'
     objective = define_objective_neural_net(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
-                                            hypermodel=EffnetOptunaHypermodel, model_type='cnn', notes=notes,
-                                            device=device)
+                                            model_type='cnn', notes=notes, device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
                                 storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
-    study.optimize(objective, n_trials=None, timeout=25)
+    study.optimize(objective, n_trials=None, timeout=40)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
@@ -75,6 +74,6 @@ if __name__ == '__main__':
     with open(LOG_DIR + 'result_figures.pkl', 'wb') as f:
         dump(figs, f)
 
-    # Execution Time # tensorboard --logdir "Petfinder-Pawpularity\logs"
+    # Execution Time
     end = time.perf_counter()
     print(f"\nExecution time = {end - start:.2f} second(s)")
