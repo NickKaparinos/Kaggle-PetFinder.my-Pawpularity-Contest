@@ -267,7 +267,7 @@ class PawpularityDataset(torch.utils.data.Dataset):
         return img_array, metadata, y
 
 
-def load_data(img_size=256) -> tuple:
+def load_train_data(img_size=256) -> tuple:
     """ Returns training set as list of (x,y) tuples
     where x = (resized_image, metadata)
     """
@@ -286,6 +286,22 @@ def load_data(img_size=256) -> tuple:
         img_data[idx, :, :, :] = img_array
 
     return img_data, metadata, y
+
+def load_test_data(img_size=256) -> tuple:
+    """ Returns test set as list of (x,y) tuples
+    where x = (resized_image, metadata)
+    """
+    test_metadata = pd.read_csv('test.csv')
+    img_ids = test_metadata['Id']
+    img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))
+    metadata = test_metadata.iloc[:, 1:].values
+
+    for idx, img_id in enumerate(tqdm(img_ids)):
+        img_array = cv2.imread(f'test/{img_id}.jpg')
+        img_array = cv2.resize(img_array, (img_size, img_size)) / 255
+        img_data[idx, :, :, :] = img_array
+
+    return img_ids, img_data, metadata
 
 
 def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, epoch, device) -> tuple:
