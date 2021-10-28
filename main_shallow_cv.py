@@ -28,12 +28,12 @@ if __name__ == '__main__':
     LOG_DIR = 'logs/shallow' + time_stamp + '/'
     makedirs(LOG_DIR, exist_ok=True)
 
-    img_size = 50
-    n_debug_images = 50
+    img_size = 125
+    # n_debug_images = 125
     img_data, metadata, y = load_train_data(img_size=img_size)
-    metadata = metadata[:n_debug_images]  # TODO remove debugging
+    # metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
-    y = y[:n_debug_images]
+    # y = y[:n_debug_images]
 
     # Regressor head
     regressor = DecisionTreeRegressor(random_state=0)

@@ -4,6 +4,8 @@ Kaggle competition
 Nick Kaparinos
 2021
 """
+import math
+
 import pandas as pd
 import numpy as np
 import wandb
@@ -20,6 +22,7 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from joblib import Parallel, delayed
 from statistics import mean
+from random import sample
 from copy import deepcopy
 from math import sqrt
 
@@ -68,36 +71,40 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
         training_dataloaders = []
         validation_dataloaders = []
         optimizers = []
-        fold_train_sizes = []
         learning_rate = 1e-3
-        batch_size = 1
+        batch_size = 16
 
         # Models
         model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, k_folds=k_folds,
                                                           device=device)
-        config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
-                                    'batch_size': batch_size}
+        # config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
+        #                             'batch_size': batch_size}
+        config = dict(hyperparameters,
+                      **{'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
+                         'batch_size': batch_size})
         wandb.init(project=f"pawpularity-{model_type}", entity="nickkaparinos", name=name, config=config, notes=notes,
                    group=model_type, reinit=True)
 
-        for fold, (train_index, validation_index) in enumerate(kf.split(y)):
-            # Split data
-            img_data_train, metadata_train, y_train = img_data[train_index], metadata[train_index], y[train_index]
-            img_data_validation, metadata_validation, y_validation = img_data[validation_index], metadata[
-                validation_index], y[validation_index]
-            fold_train_sizes.append(y_train.shape[0])
+        percentage = 0.25
+        indices = set([i for i in range(len(y))])
+        validation_index = set(sample(indices, math.floor(percentage * len(indices))))
+        train_index = list(indices - validation_index)
+        validation_index = list(validation_index)
 
+        for fold, (train_index, validation_index) in enumerate(kf.split(y)):
             # Datasets
-            training_dataset = PawpularityDataset(img_data_train, metadata_train, y_train)
-            validation_dataset = PawpularityDataset(img_data_validation, metadata_validation, y_validation)
+            # training_dataset = PawpularityDataset(img_data_train, metadata_train, y_train)
+            # validation_dataset = PawpularityDataset(img_data_validation, metadata_validation, y_validation)
+            training_dataset = PawpularityDataset_New(train_index)
+            validation_dataset = PawpularityDataset_New(validation_index)
 
             # Dataloders
             training_dataloaders.append(
-                DataLoader(dataset=training_dataset, batch_size=batch_size, shuffle=True, num_workers=2,
-                           prefetch_factor=2))
+                DataLoader(dataset=training_dataset, batch_size=batch_size, shuffle=True, num_workers=1,
+                           prefetch_factor=1))
             validation_dataloaders.append(
-                DataLoader(dataset=validation_dataset, batch_size=batch_size, shuffle=True, num_workers=2,
-                           prefetch_factor=2))
+                DataLoader(dataset=validation_dataset, batch_size=batch_size, shuffle=True, num_workers=1,
+                           prefetch_factor=1))
             optimizers.append(torch.optim.Adam(model_list[fold].parameters(), lr=learning_rate))
 
         for epoch in tqdm(range(epochs)):
@@ -106,16 +113,17 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
             val_rmse_list = []
             val_r2_list = []
             for fold in range(k_folds):
-                train_rmse, train_r2 = pytorch_train_loop(training_dataloaders[fold], fold_train_sizes[fold],
+                train_rmse, train_r2 = pytorch_train_loop(img_data, metadata, y, training_dataloaders[fold],
                                                           model_list[fold], loss_fn, optimizers[fold], epoch, device)
-                val_rmse, val_r2 = pytorch_test_loop(validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
+                val_rmse, val_r2 = pytorch_test_loop(img_data, metadata, y, validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
                                                      device)
                 val_rmse_list.append(val_rmse)
                 val_r2_list.append(val_r2)
                 train_rmse_list.append(train_rmse)
                 train_r2_list.append(train_r2)
             val_average_rmse = mean(val_rmse_list)
-            wandb.log(data={'Epoch': epoch, 'Mean Training RMSE': mean(train_rmse_list), 'Mean Training R2': mean(train_r2_list),
+            wandb.log(data={'Epoch': epoch, 'Mean Training RMSE': mean(train_rmse_list),
+                            'Mean Training R2': mean(train_r2_list),
                             'Mean Validation RMSE': val_average_rmse, 'Folds Validation RMSE': val_rmse_list,
                             'Mean Validation R2': mean(val_r2_list), 'Fold Validation R2': val_r2_list})
             # Pruning
@@ -267,6 +275,18 @@ class PawpularityDataset(torch.utils.data.Dataset):
         return img_array, metadata, y
 
 
+class PawpularityDataset_New(torch.utils.data.Dataset):
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, index):
+
+        return self.indices[index]
+
+
 def load_train_data(img_size=256) -> tuple:
     """ Returns training set as list of (x,y) tuples
     where x = (resized_image, metadata)
@@ -274,18 +294,19 @@ def load_train_data(img_size=256) -> tuple:
     train_metadata = pd.read_csv('train.csv')
     img_ids = train_metadata['Id']
     n_debug_images = 50
-    img_data = np.zeros((n_debug_images, img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
+    img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
     metadata = train_metadata.iloc[:, 1:-1].values
     y = train_metadata.iloc[:, -1].values
 
     for idx, img_id in enumerate(tqdm(img_ids)):
-        if idx >= n_debug_images:  # TODO remove debugging
-            break
+        # if idx >= n_debug_images:  # TODO remove debugging
+        #     break
         img_array = cv2.imread(f'train/{img_id}.jpg')
         img_array = cv2.resize(img_array, (img_size, img_size)) / 255
         img_data[idx, :, :, :] = img_array
 
-    return img_data, metadata, y
+    return img_data.astype(np.single), metadata.astype(np.single), y.astype(np.single)
+
 
 def load_test_data(img_size=256) -> tuple:
     """ Returns test set as list of (x,y) tuples
@@ -304,21 +325,21 @@ def load_test_data(img_size=256) -> tuple:
     return img_ids, img_data, metadata
 
 
-def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, epoch, device) -> tuple:
+def pytorch_train_loop(img_data, metadata, y, dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
     running_loss = 0.0
     y_list = []
     y_pred_list = []
-    for batch, X in enumerate(dataloader):
-        images, metadata, y = X
-        metadata = metadata.to(device)
-        y = y.to(device)
-        images = images.permute(0, 3, 1, 2).to(
+    for batch, indices in enumerate(dataloader):
+        img_data_batch = torch.tensor(img_data[indices]).to(device)
+        metadata_batch = torch.tensor(metadata[indices]).to(device)
+        y_batch = torch.tensor(y[indices]).to(device)
+        img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
             device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
         # Calculate loss function
-        y_pred = model((images, metadata))
-        loss = loss_fn(y_pred, y.view(-1, 1))
-        y_list.extend(y.to('cpu').tolist())
+        y_pred = model((img_data_batch, metadata_batch))
+        loss = loss_fn(y_pred, y_batch.view(-1, 1))
+        y_list.extend(y_batch.to('cpu').tolist())
         y_pred_list.extend(y_pred[:, 0].to('cpu').tolist())
 
         # Back propagation
@@ -337,22 +358,22 @@ def pytorch_train_loop(dataloader, size, model, loss_fn, optimizer, epoch, devic
     return train_rmse, train_r2
 
 
-def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
+def pytorch_test_loop(img_data, metadata, y, dataloader, model, loss_fn, epoch, device) -> tuple:
     running_loss = 0.0
     y_list = []
     y_pred_list = []
     with torch.no_grad():
-        for batch, X in enumerate(dataloader):
-            images, metadata, y = X
-            metadata = metadata.to(device)
-            y = y.to(device)
-            images = images.permute(0, 3, 1, 2).to(
+        for batch, indices in enumerate(dataloader):
+            img_data_batch = torch.tensor(img_data[indices]).to(device)
+            metadata_batch = torch.tensor(metadata[indices]).to(device)
+            y_batch = torch.tensor(y[indices]).to(device)
+            img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
                 device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
             # Calculate loss function
-            y_pred = model((images, metadata))
-            loss = loss_fn(y_pred, y.view(-1, 1))
-            y_list.extend(y.to('cpu').tolist())
+            y_pred = model((img_data_batch, metadata_batch))
+            loss = loss_fn(y_pred, y_batch.view(-1, 1))
+            y_list.extend(y_batch.to('cpu').tolist())
             y_pred_list.extend(y_pred[:, 0].to('cpu').tolist())
 
             running_loss += loss.item()
@@ -373,7 +394,6 @@ def create_models(model_type, trial, k_folds, device):
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
         model_list = [EffnetOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
                       range(k_folds)]
-
         name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
         hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
         return model_list, name, hyperparamers
@@ -382,7 +402,6 @@ def create_models(model_type, trial, k_folds, device):
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
         model_list = [SwinOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
                       range(k_folds)]
-
         name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
         hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
         return model_list, name, hyperparamers
