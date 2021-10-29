@@ -34,10 +34,10 @@ if __name__ == '__main__':
     k_folds = 4
     img_size = 150
     n_debug_images = 50
-    img_data, metadata, y = load_train_data(img_size=img_size)
-    # metadata = metadata[:n_debug_images]  # TODO remove debugging
+    img_data, metadata, y = load_train_data(img_size=img_size, device=device)
+    metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
-    # y = y[:n_debug_images]
+    y = y[:n_debug_images]
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'

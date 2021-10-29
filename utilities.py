@@ -85,18 +85,10 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
         wandb.init(project=f"pawpularity-{model_type}", entity="nickkaparinos", name=name, config=config, notes=notes,
                    group=model_type, reinit=True)
 
-        percentage = 0.25
-        indices = set([i for i in range(len(y))])
-        validation_index = set(sample(indices, math.floor(percentage * len(indices))))
-        train_index = list(indices - validation_index)
-        validation_index = list(validation_index)
-
         for fold, (train_index, validation_index) in enumerate(kf.split(y)):
             # Datasets
-            # training_dataset = PawpularityDataset(img_data_train, metadata_train, y_train)
-            # validation_dataset = PawpularityDataset(img_data_validation, metadata_validation, y_validation)
-            training_dataset = PawpularityDataset_New(train_index)
-            validation_dataset = PawpularityDataset_New(validation_index)
+            training_dataset = PawpularityDataset(train_index)
+            validation_dataset = PawpularityDataset(validation_index)
 
             # Dataloders
             training_dataloaders.append(
@@ -115,7 +107,8 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
             for fold in range(k_folds):
                 train_rmse, train_r2 = pytorch_train_loop(img_data, metadata, y, training_dataloaders[fold],
                                                           model_list[fold], loss_fn, optimizers[fold], epoch, device)
-                val_rmse, val_r2 = pytorch_test_loop(img_data, metadata, y, validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
+                val_rmse, val_r2 = pytorch_test_loop(img_data, metadata, y, validation_dataloaders[fold],
+                                                     model_list[fold], loss_fn, epoch,
                                                      device)
                 val_rmse_list.append(val_rmse)
                 val_r2_list.append(val_r2)
@@ -176,12 +169,13 @@ class SKlearnWrapper():
 
 
 class SwinOptunaHypermodel(nn.Module):
-    def __init__(self, n_linear_layers, n_neurons, input_channels=3):
+    def __init__(self, n_linear_layers, n_neurons, p, input_channels=3):
         super().__init__()
         self.swin = timm.create_model('swin_base_patch4_window7_224', pretrained=True)
         self.swin.patch_embed = timm.models.layers.patch_embed.PatchEmbed(patch_size=4, embed_dim=128,
                                                                           norm_layer=nn.LayerNorm)
         self.fc1 = nn.LazyLinear(n_neurons)
+        self.dropout = nn.Dropout(p=p)
         self.temp_layers = []
         for _ in range(n_linear_layers):
             self.temp_layers.append(nn.Linear(n_neurons, n_neurons))
@@ -195,21 +189,24 @@ class SwinOptunaHypermodel(nn.Module):
         x = torch.cat((x, metadata), dim=1)
         x = self.fc1(x)
         x = nn.ReLU()(x)
+        x = self.dropout(x)
         for i in range(len(self.linear_layers)):
             x = self.linear_layers[i](x)
             x = nn.ReLU()(x)
+            x = self.dropout(x)
         x = self.output_layer(x)
         return x
 
 
 class EffnetOptunaHypermodel(nn.Module):
-    def __init__(self, n_linear_layers, n_neurons, input_channels=3):
+    def __init__(self, n_linear_layers, n_neurons, p, input_channels=3):
         super().__init__()
         self.model = EfficientNet.from_pretrained('efficientnet-b0')
         for param in self.model.parameters():
             param.requires_grad = False
         self.fc1 = nn.LazyLinear(n_neurons)
         self.temp_layers = []
+        self.dropout = nn.Dropout(p=p)
         for _ in range(n_linear_layers):
             self.temp_layers.append(nn.Linear(n_neurons, n_neurons))
         self.linear_layers = nn.ModuleList(self.temp_layers)
@@ -219,15 +216,14 @@ class EffnetOptunaHypermodel(nn.Module):
         images, metadata = x
         x = self.model.extract_features(images)
         x = nn.Flatten()(x)
-        # print(f'x shape before: {x.shape}')
-        # print(f'metadata shape before: {metadata.shape}')
         x = torch.cat((x, metadata), dim=1)
-        # print(f'x shape after: {x.shape}')
         x = self.fc1(x)
         x = nn.ReLU()(x)
+        x = self.dropout(x)
         for i in range(len(self.linear_layers)):
             x = self.linear_layers[i](x)
             x = nn.ReLU()(x)
+            x = self.dropout(x)
         x = self.output_layer(x)
         return x
 
@@ -258,7 +254,7 @@ class EffnetModel(nn.Module):
         return x
 
 
-class PawpularityDataset(torch.utils.data.Dataset):
+class PawpularityDataset_OLD(torch.utils.data.Dataset):
     def __init__(self, images, metadata, y):
         self.images = torch.Tensor(images)
         self.metadata = torch.Tensor(metadata)
@@ -275,7 +271,7 @@ class PawpularityDataset(torch.utils.data.Dataset):
         return img_array, metadata, y
 
 
-class PawpularityDataset_New(torch.utils.data.Dataset):
+class PawpularityDataset(torch.utils.data.Dataset):
     def __init__(self, indices):
         self.indices = indices
 
@@ -283,29 +279,29 @@ class PawpularityDataset_New(torch.utils.data.Dataset):
         return len(self.indices)
 
     def __getitem__(self, index):
-
         return self.indices[index]
 
 
-def load_train_data(img_size=256) -> tuple:
+def load_train_data(img_size=256, device='cpu') -> tuple:
     """ Returns training set as list of (x,y) tuples
     where x = (resized_image, metadata)
     """
     train_metadata = pd.read_csv('train.csv')
     img_ids = train_metadata['Id']
     n_debug_images = 50
-    img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
+    img_data = np.zeros((n_debug_images, img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
     metadata = train_metadata.iloc[:, 1:-1].values
     y = train_metadata.iloc[:, -1].values
 
     for idx, img_id in enumerate(tqdm(img_ids)):
-        # if idx >= n_debug_images:  # TODO remove debugging
-        #     break
+        if idx >= n_debug_images:  # TODO remove debugging
+            break
         img_array = cv2.imread(f'train/{img_id}.jpg')
         img_array = cv2.resize(img_array, (img_size, img_size)) / 255
         img_data[idx, :, :, :] = img_array
 
-    return img_data.astype(np.single), metadata.astype(np.single), y.astype(np.single)
+    return torch.tensor(img_data.astype(np.single)).to(device), torch.tensor(metadata.astype(np.single)).to(
+        device), torch.tensor(y.astype(np.single)).to(device)
 
 
 def load_test_data(img_size=256) -> tuple:
@@ -326,13 +322,14 @@ def load_test_data(img_size=256) -> tuple:
 
 
 def pytorch_train_loop(img_data, metadata, y, dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
+    model.train()
     running_loss = 0.0
     y_list = []
     y_pred_list = []
     for batch, indices in enumerate(dataloader):
-        img_data_batch = torch.tensor(img_data[indices]).to(device)
-        metadata_batch = torch.tensor(metadata[indices]).to(device)
-        y_batch = torch.tensor(y[indices]).to(device)
+        img_data_batch = img_data[indices]
+        metadata_batch = metadata[indices]
+        y_batch = y[indices]
         img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
             device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
@@ -359,14 +356,15 @@ def pytorch_train_loop(img_data, metadata, y, dataloader, model, loss_fn, optimi
 
 
 def pytorch_test_loop(img_data, metadata, y, dataloader, model, loss_fn, epoch, device) -> tuple:
+    model.eval()
     running_loss = 0.0
     y_list = []
     y_pred_list = []
     with torch.no_grad():
         for batch, indices in enumerate(dataloader):
-            img_data_batch = torch.tensor(img_data[indices]).to(device)
-            metadata_batch = torch.tensor(metadata[indices]).to(device)
-            y_batch = torch.tensor(y[indices]).to(device)
+            img_data_batch = img_data[indices]
+            metadata_batch = metadata[indices]
+            y_batch = y[indices]
             img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
                 device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
@@ -392,18 +390,22 @@ def create_models(model_type, trial, k_folds, device):
     if model_type == 'cnn':
         n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        model_list = [EffnetOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+        p = trial.suggest_float('dropout_p', low=0, high=1, step=0.1)
+        model_list = [EffnetOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons, p=p).to(device) for _
+                      in
                       range(k_folds)]
         name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
-        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
+        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers, 'dropout_p': p}
         return model_list, name, hyperparamers
     elif model_type == 'swin':
         n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        model_list = [SwinOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons).to(device) for _ in
+        p = trial.suggest_float('dropout_p', low=0, high=1, step=0.1)
+        model_list = [SwinOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons, p=p).to(device) for _
+                      in
                       range(k_folds)]
         name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
-        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers}
+        hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers, 'dropout_p': p}
         return model_list, name, hyperparamers
     else:
         raise ValueError(f"Model type {model_type} not supported!")
