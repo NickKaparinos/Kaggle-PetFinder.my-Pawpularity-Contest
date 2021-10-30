@@ -131,7 +131,7 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
 class SKlearnWrapper():
     def __init__(self, head, device, input_channels=3, print_shape=False):
         # Use efficientnet backbone
-        self.model = EfficientNet.from_pretrained('efficientnet-b0').to(device=device)
+        self.model = EfficientNet.from_pretrained('efficientnet-b3').to(device=device)
         for param in self.model.parameters():
             param.requires_grad = False
         self.head = head
@@ -201,7 +201,7 @@ class SwinOptunaHypermodel(nn.Module):
 class EffnetOptunaHypermodel(nn.Module):
     def __init__(self, n_linear_layers, n_neurons, p, input_channels=3):
         super().__init__()
-        self.model = EfficientNet.from_pretrained('efficientnet-b0')
+        self.model = EfficientNet.from_pretrained('efficientnet-b3')
         for param in self.model.parameters():
             param.requires_grad = False
         self.fc1 = nn.LazyLinear(n_neurons)
@@ -232,7 +232,7 @@ class EffnetModel(nn.Module):
     def __init__(self, input_channels=3):
         super().__init__()
         # Use efficientnet
-        self.model = EfficientNet.from_pretrained('efficientnet-b0')
+        self.model = EfficientNet.from_pretrained('efficientnet-b3')
         for param in self.model.parameters():
             param.requires_grad = False
         self.fc1 = nn.LazyLinear(256)
@@ -289,19 +289,22 @@ def load_train_data(img_size=256, device='cpu') -> tuple:
     train_metadata = pd.read_csv('train.csv')
     img_ids = train_metadata['Id']
     n_debug_images = 50
-    img_data = np.zeros((n_debug_images, img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
+    # img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
+    img_data = torch.zeros((img_ids.shape[0], img_size, img_size, 3), dtype=torch.float32)
     metadata = train_metadata.iloc[:, 1:-1].values
     y = train_metadata.iloc[:, -1].values
 
     for idx, img_id in enumerate(tqdm(img_ids)):
-        if idx >= n_debug_images:  # TODO remove debugging
-            break
+        # if idx >= n_debug_images:  # TODO remove debugging
+        #     break
         img_array = cv2.imread(f'train/{img_id}.jpg')
         img_array = cv2.resize(img_array, (img_size, img_size)) / 255
-        img_data[idx, :, :, :] = img_array
+        img_data[idx, :, :, :] = torch.tensor(img_array)
+    img_data = img_data.to(device)
+    metadata = torch.tensor(metadata.astype(np.single)).to(device)
+    y = torch.tensor(y.astype(np.single)).to(device)
 
-    return torch.tensor(img_data.astype(np.single)).to(device), torch.tensor(metadata.astype(np.single)).to(
-        device), torch.tensor(y.astype(np.single)).to(device)
+    return img_data, metadata, y
 
 
 def load_test_data(img_size=256) -> tuple:
@@ -390,21 +393,21 @@ def create_models(model_type, trial, k_folds, device):
     if model_type == 'cnn':
         n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        p = trial.suggest_float('dropout_p', low=0, high=1, step=0.1)
+        p = trial.suggest_float('dropout_p', low=0, high=0.5, step=0.1)
         model_list = [EffnetOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons, p=p).to(device) for _
                       in
                       range(k_folds)]
-        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
+        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers},drop{p}'
         hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers, 'dropout_p': p}
         return model_list, name, hyperparamers
     elif model_type == 'swin':
         n_linear_layers = trial.suggest_int('n_linear_layers', 0, 4)
         n_neurons = trial.suggest_int('n_neurons', low=32, high=512, step=32)
-        p = trial.suggest_float('dropout_p', low=0, high=1, step=0.1)
+        p = trial.suggest_float('dropout_p', low=0, high=0.5, step=0.1)
         model_list = [SwinOptunaHypermodel(n_linear_layers=n_linear_layers, n_neurons=n_neurons, p=p).to(device) for _
                       in
                       range(k_folds)]
-        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers}'
+        name = f'{model_type}_neurons{n_neurons},layers{n_linear_layers},drop{p}'
         hyperparamers = {'n_neurons': n_neurons, 'n_linear_layers': n_linear_layers, 'dropout_p': p}
         return model_list, name, hyperparamers
     else:

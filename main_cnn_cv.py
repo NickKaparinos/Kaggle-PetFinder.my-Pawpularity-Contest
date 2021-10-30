@@ -30,14 +30,14 @@ if __name__ == '__main__':
     LOG_DIR = 'logs/cnn' + time_stamp + '/'
     makedirs(LOG_DIR, exist_ok=True)
 
-    epochs = 4
+    epochs = 12
     k_folds = 4
-    img_size = 150
-    n_debug_images = 50
+    img_size = 224
+    # n_debug_images = 50
     img_data, metadata, y = load_train_data(img_size=img_size, device=device)
-    metadata = metadata[:n_debug_images]  # TODO remove debugging
+    # metadata = metadata[:n_debug_images]  # TODO remove debugging
     X = (img_data, metadata)
-    y = y[:n_debug_images]
+    # y = y[:n_debug_images]
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'
@@ -48,7 +48,7 @@ if __name__ == '__main__':
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
                                 storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
-    study.optimize(objective, n_trials=2, timeout=None)
+    study.optimize(objective, n_trials=25, timeout=3600*24)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
