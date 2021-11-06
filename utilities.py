@@ -4,8 +4,6 @@ Kaggle competition
 Nick Kaparinos
 2021
 """
-import math
-
 import pandas as pd
 import numpy as np
 import wandb
@@ -16,15 +14,16 @@ import optuna
 import torch
 import torch.nn as nn
 from efficientnet_pytorch import EfficientNet
-from sklearn.model_selection import KFold
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from joblib import Parallel, delayed
 from statistics import mean
-from random import sample
 from copy import deepcopy
 from math import sqrt
+import albumentations as A
+
+debugging = True
 
 
 def define_objective(regressor, img_data, metadata, y, kfolds, device):
@@ -64,7 +63,7 @@ def define_objective(regressor, img_data, metadata, y, kfolds, device):
     return objective
 
 
-def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_type, notes, device):
+def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes, PawpularityDataset, device):
     def objective(trial):
         kf = KFold(n_splits=k_folds)
         loss_fn = torch.nn.MSELoss()
@@ -72,22 +71,31 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
         validation_dataloaders = []
         optimizers = []
         learning_rate = 1e-3
-        batch_size = 16
+        batch_size = 2
+        augmentations = A.Compose(
+            [A.HueSaturationValue(hue_shift_limit=0.15, sat_shift_limit=0.15, val_shift_limit=0.15, p=0.5),
+             A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1), contrast_limit=(-0.1, 0.1), p=1),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5)], p=1.0)
 
         # Models
         model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, k_folds=k_folds,
                                                           device=device)
-        # config = hyperparameters | {'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
+        # config = hyperparameters | {'img_size': img_size, 'epochs': epochs, 'learning_rate': learning_rate,
         #                             'batch_size': batch_size}
         config = dict(hyperparameters,
-                      **{'img_size': img_data.shape[1], 'epochs': epochs, 'learning_rate': learning_rate,
+                      **{'img_size': img_size, 'epochs': epochs, 'learning_rate': learning_rate,
                          'batch_size': batch_size})
         wandb.init(project=f"pawpularity-{model_type}", entity="nickkaparinos", name=name, config=config, notes=notes,
                    group=model_type, reinit=True)
 
         for fold, (train_index, validation_index) in enumerate(kf.split(y)):
             # Datasets
-            training_dataset = PawpularityDataset(train_index)
+            training_dataset = PawpularityDataset(train_index, augmentations=augmentations)
             validation_dataset = PawpularityDataset(validation_index)
 
             # Dataloders
@@ -105,10 +113,9 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
             val_rmse_list = []
             val_r2_list = []
             for fold in range(k_folds):
-                train_rmse, train_r2 = pytorch_train_loop(img_data, metadata, y, training_dataloaders[fold],
-                                                          model_list[fold], loss_fn, optimizers[fold], epoch, device)
-                val_rmse, val_r2 = pytorch_test_loop(img_data, metadata, y, validation_dataloaders[fold],
-                                                     model_list[fold], loss_fn, epoch,
+                train_rmse, train_r2 = pytorch_train_loop(training_dataloaders[fold], model_list[fold], loss_fn,
+                                                          optimizers[fold], epoch, device)
+                val_rmse, val_r2 = pytorch_test_loop(validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
                                                      device)
                 val_rmse_list.append(val_rmse)
                 val_r2_list.append(val_r2)
@@ -116,9 +123,9 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
                 train_r2_list.append(train_r2)
             val_average_rmse = mean(val_rmse_list)
             wandb.log(data={'Epoch': epoch, 'Mean Training RMSE': mean(train_rmse_list),
-                            'Mean Training R2': mean(train_r2_list),
-                            'Mean Validation RMSE': val_average_rmse, 'Folds Validation RMSE': val_rmse_list,
-                            'Mean Validation R2': mean(val_r2_list), 'Fold Validation R2': val_r2_list})
+                            'Mean Training R2': mean(train_r2_list), 'Mean Validation RMSE': val_average_rmse,
+                            'Folds Validation RMSE': val_rmse_list, 'Mean Validation R2': mean(val_r2_list),
+                            'Fold Validation R2': val_r2_list})
             # Pruning
             trial.report(val_average_rmse, epoch)
             if trial.should_prune():
@@ -129,7 +136,7 @@ def define_objective_neural_net(img_data, metadata, y, k_folds, epochs, model_ty
 
 
 class SKlearnWrapper():
-    def __init__(self, head, device, input_channels=3, print_shape=False):
+    def __init__(self, head, device):
         # Use efficientnet backbone
         self.model = EfficientNet.from_pretrained('efficientnet-b3').to(device=device)
         for param in self.model.parameters():
@@ -143,12 +150,9 @@ class SKlearnWrapper():
             self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
         x = self.model.extract_features(images.float())
         x = nn.Flatten()(x)
-        # print(f'x shape before: {x.shape}')
-        # print(f'metadata shape before: {metadata.shape}')
-        X = torch.cat((x.to('cpu'), metadata), dim=1)
-        # print(f'X shape after: {X.shape}')
-        X = X.numpy()
-        self.head.fit(X, y)
+        x = torch.cat((x.to('cpu'), metadata), dim=1)
+        x = x.numpy()
+        self.head.fit(x, y)
 
     def predict(self, X):
         images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])
@@ -199,7 +203,7 @@ class SwinOptunaHypermodel(nn.Module):
 
 
 class EffnetOptunaHypermodel(nn.Module):
-    def __init__(self, n_linear_layers, n_neurons, p, input_channels=3):
+    def __init__(self, n_linear_layers, n_neurons, p):
         super().__init__()
         self.model = EfficientNet.from_pretrained('efficientnet-b3')
         for param in self.model.parameters():
@@ -229,7 +233,7 @@ class EffnetOptunaHypermodel(nn.Module):
 
 
 class EffnetModel(nn.Module):
-    def __init__(self, input_channels=3):
+    def __init__(self):
         super().__init__()
         # Use efficientnet
         self.model = EfficientNet.from_pretrained('efficientnet-b3')
@@ -254,55 +258,33 @@ class EffnetModel(nn.Module):
         return x
 
 
-class PawpularityDataset_OLD(torch.utils.data.Dataset):
-    def __init__(self, images, metadata, y):
-        self.images = torch.Tensor(images)
-        self.metadata = torch.Tensor(metadata)
-        self.y = torch.Tensor(y)
-
-    def __len__(self):
-        return self.images.shape[0]
-
-    def __getitem__(self, index):
-        img_array = self.images[index]
-        metadata = self.metadata[index]
-        y = self.y[index]
-
-        return img_array, metadata, y
-
-
-class PawpularityDataset(torch.utils.data.Dataset):
-    def __init__(self, indices):
-        self.indices = indices
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, index):
-        return self.indices[index]
-
-
-def load_train_data(img_size=256, device='cpu') -> tuple:
+def load_train_data(img_size=256) -> tuple:
     """ Returns training set as list of (x,y) tuples
     where x = (resized_image, metadata)
     """
     train_metadata = pd.read_csv('train.csv')
     img_ids = train_metadata['Id']
-    n_debug_images = 50
-    # img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))  # TODO remove debugging img_ids.shape[0]
-    img_data = torch.zeros((img_ids.shape[0], img_size, img_size, 3), dtype=torch.float32)
+    if debugging:
+        n_debug_images = 50
+        img_data = np.zeros((n_debug_images, img_size, img_size, 3), dtype=np.single)
+    else:
+        img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3), dtype=np.single)
     metadata = train_metadata.iloc[:, 1:-1].values
     y = train_metadata.iloc[:, -1].values
 
     for idx, img_id in enumerate(tqdm(img_ids)):
-        # if idx >= n_debug_images:  # TODO remove debugging
-        #     break
+        if debugging and idx >= n_debug_images:
+            break
         img_array = cv2.imread(f'train/{img_id}.jpg')
         img_array = cv2.resize(img_array, (img_size, img_size)) / 255
-        img_data[idx, :, :, :] = torch.tensor(img_array)
-    img_data = img_data.to(device)
-    metadata = torch.tensor(metadata.astype(np.single)).to(device)
-    y = torch.tensor(y.astype(np.single)).to(device)
+        img_data[idx, :, :, :] = img_array
+    img_data = img_data
+    metadata = torch.tensor(metadata.astype(np.single))
+    y = torch.tensor(y.astype(np.single))
+
+    if debugging:
+        metadata = metadata[:n_debug_images]
+        y = y[:n_debug_images]
 
     return img_data, metadata, y
 
@@ -324,15 +306,14 @@ def load_test_data(img_size=256) -> tuple:
     return img_ids, img_data, metadata
 
 
-def pytorch_train_loop(img_data, metadata, y, dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
+def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
     model.train()
     running_loss = 0.0
     y_list = []
     y_pred_list = []
-    for batch, indices in enumerate(dataloader):
-        img_data_batch = img_data[indices]
-        metadata_batch = metadata[indices]
-        y_batch = y[indices]
+    for batch, (img_data_batch, metadata_batch, y_batch) in enumerate(dataloader):
+        img_data_batch, metadata_batch = img_data_batch.to(device), metadata_batch.to(device),
+        y_batch = y_batch.to(device)
         img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
             device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
@@ -358,16 +339,15 @@ def pytorch_train_loop(img_data, metadata, y, dataloader, model, loss_fn, optimi
     return train_rmse, train_r2
 
 
-def pytorch_test_loop(img_data, metadata, y, dataloader, model, loss_fn, epoch, device) -> tuple:
+def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
     model.eval()
     running_loss = 0.0
     y_list = []
     y_pred_list = []
     with torch.no_grad():
-        for batch, indices in enumerate(dataloader):
-            img_data_batch = img_data[indices]
-            metadata_batch = metadata[indices]
-            y_batch = y[indices]
+        for batch, (img_data_batch, metadata_batch, y_batch) in enumerate(dataloader):
+            img_data_batch, metadata_batch = img_data_batch.to(device), metadata_batch.to(device)
+            y_batch = y_batch.to(device)
             img_data_batch = img_data_batch.permute(0, 3, 1, 2).to(
                 device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
 
@@ -425,7 +405,7 @@ def score(X_train, y_train, X_validation, y_validation, model) -> float:
     return val_rmse, val_r2
 
 
-def save_dict_to_file(dict, path, txt_name='hyperparameter_dict'):
+def save_dict_to_file(dictionary, path, txt_name='hyperparameter_dict'):
     f = open(path + '/' + txt_name + '.txt', 'w')
-    f.write(str(dict))
+    f.write(str(dictionary))
     f.close()

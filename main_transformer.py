@@ -4,21 +4,20 @@ Kaggle competition
 Nick Kaparinos
 2021
 """
-import torch
-
 from utilities import *
 import time
-import timm
 from os import makedirs
 from pickle import dump
 import cv2
 from pprint import pprint
+import random
 import logging
 import sys
 
 if __name__ == '__main__':
     start = time.perf_counter()
     seed = 0
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -26,6 +25,8 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     device = 'cpu'
     print(f"Using device: {device}")
+    if debugging:
+        print("Debugging!!!")
 
     # Timm and swin transformer
     # model_names = timm.list_models(pretrained=True)
@@ -42,16 +43,34 @@ if __name__ == '__main__':
     k_folds = 4
     img_size = 224
     n_debug_images = 5
-    img_data, metadata, y = load_train_data(img_size=img_size, device=device)
-    metadata = metadata[:n_debug_images]  # TODO remove debugging
+    img_data, metadata, y = load_train_data(img_size=img_size)
     X = (img_data, metadata)
-    y = y[:n_debug_images]
+
+
+    class PawpularityDataset(torch.utils.data.Dataset):
+        def __init__(self, indices, augmentations=None):
+            self.indices = indices
+            self.augmentations = augmentations
+
+        def __len__(self):
+            return len(self.indices)
+
+        def __getitem__(self, index):
+            img_data_batch = img_data[self.indices[index]]
+            metadata_batch = metadata[self.indices[index]]
+            y_batch = y[self.indices[index]]
+
+            if self.augmentations is not None:
+                img_data_batch = self.augmentations(image=img_data_batch)['image']
+
+            return img_data_batch, metadata_batch, y_batch
+
 
     # Hyperparameter optimisation
     study_name = f'swin_study_{time_stamp}'
     notes = 'optimizer:Adam, swin_base_patch4_window7_224'
-    objective = define_objective_neural_net(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
-                                            model_type='swin', notes=notes, device=device)
+    objective = define_objective_neural_net(img_size=img_size, y=y, k_folds=k_folds, epochs=epochs, model_type='swin',
+                                            notes=notes, PawpularityDataset=PawpularityDataset, device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),

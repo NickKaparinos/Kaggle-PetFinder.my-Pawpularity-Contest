@@ -4,25 +4,27 @@ Kaggle competition
 Nick Kaparinos
 2021
 """
-import torch
 from utilities import *
 import time
 import torch
-import matplotlib.pyplot as plt
-import seaborn as sns
 from os import makedirs
 from pickle import dump
+import random
 import logging
 import sys
+import cv2
 
 if __name__ == '__main__':
     start = time.perf_counter()
     seed = 0
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if debugging:
+        print("Debugging!!!")
     print(f"Using device: {device}")
 
     # Log directory
@@ -33,22 +35,39 @@ if __name__ == '__main__':
     epochs = 12
     k_folds = 4
     img_size = 224
-    # n_debug_images = 50
-    img_data, metadata, y = load_train_data(img_size=img_size, device=device)
-    # metadata = metadata[:n_debug_images]  # TODO remove debugging
+    img_data, metadata, y = load_train_data(img_size=img_size)
     X = (img_data, metadata)
-    # y = y[:n_debug_images]
+
+
+    class PawpularityDataset(torch.utils.data.Dataset):
+        def __init__(self, indices, augmentations=None):
+            self.indices = indices
+            self.augmentations = augmentations
+
+        def __len__(self):
+            return len(self.indices)
+
+        def __getitem__(self, index):
+            img_data_batch = img_data[self.indices[index]]
+            metadata_batch = metadata[self.indices[index]]
+            y_batch = y[self.indices[index]]
+
+            if self.augmentations is not None:
+                img_data_batch = self.augmentations(image=img_data_batch)['image']
+
+            return img_data_batch, metadata_batch, y_batch
+
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'
     notes = 'optimizer:Adam'
-    objective = define_objective_neural_net(img_data=img_data, metadata=metadata, y=y, k_folds=k_folds, epochs=epochs,
-                                            model_type='cnn', notes=notes, device=device)
+    objective = define_objective_neural_net(img_size=img_size, y=y, k_folds=k_folds, epochs=epochs, model_type='cnn',
+                                            notes=notes, PawpularityDataset=PawpularityDataset, device=device)
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
                                 storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
-    study.optimize(objective, n_trials=25, timeout=3600*24)
+    study.optimize(objective, n_trials=25, timeout=3600 * 24)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
