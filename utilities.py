@@ -18,6 +18,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from joblib import Parallel, delayed
+from joblib.externals.loky.backend.context import get_context
 from statistics import mean
 from copy import deepcopy
 from math import sqrt
@@ -39,17 +40,27 @@ def define_objective(regressor, img_data, metadata, y, kfolds, device):
             hyperparameters['splitter'] = trial.suggest_categorical('splitter', ["random", "best"])
             hyperparameters['max_features'] = trial.suggest_categorical('max_features', ["auto", "sqrt"])
 
+        augmentations = A.Compose(
+            [A.HueSaturationValue(hue_shift_limit=0.15, sat_shift_limit=0.15, val_shift_limit=0.15, p=0.5),
+             A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1), contrast_limit=(-0.1, 0.1), p=0.5),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5),
+             A.augmentations.transforms.Cutout(num_holes=1, max_h_size=40, max_w_size=40, fill_value=0,
+                                               always_apply=False, p=0.5)], p=1.0)
+
         name = (model_name + str(hyperparameters)).replace(' ', '')
         print(f"model name = {model_name}")
         wandb.init(project="pawpularity-shallow", entity="nickkaparinos", name=name, config=hyperparameters,
                    reinit=True, group=model_name)
         regressor.set_params(**hyperparameters)
-        model = SKlearnWrapper(head=regressor, device=device)
+        model = SKlearnWrapper(head=regressor, augmentations=augmentations, device=device)
 
         k_folds = kfolds
         kf = KFold(n_splits=k_folds)
 
-        cv_results = Parallel(n_jobs=kfolds, prefer="processes")(
+        cv_results = Parallel(n_jobs=k_folds, prefer="processes")(
             delayed(score)((img_data[train_index], metadata[train_index]), y[train_index],
                            (img_data[validation_index], metadata[validation_index]), y[validation_index],
                            deepcopy(model)) for train_index, validation_index in kf.split(y))
@@ -136,31 +147,44 @@ def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes,
 
 
 class SKlearnWrapper():
-    def __init__(self, head, device):
+    def __init__(self, head, augmentations=None, device='cpu'):
         # Use efficientnet backbone
         self.model = EfficientNet.from_pretrained('efficientnet-b3').to(device=device)
         for param in self.model.parameters():
             param.requires_grad = False
+
         self.head = head
+        self.augmentations = augmentations
         self.device = device
 
     def fit(self, X, y):
-        images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])
-        images = images.permute(0, 3, 1, 2).to(
-            self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
-        x = self.model.extract_features(images.float())
-        x = nn.Flatten()(x)
-        x = torch.cat((x.to('cpu'), metadata), dim=1)
+        images, metadata = X[0], X[1].to(self.device).to('cpu')
+
+        dataset = ShallowModelDataset(images=images, augmentations=self.augmentations)
+        dataloader = DataLoader(dataset=dataset, batch_size=16, shuffle=True, num_workers=1, prefetch_factor=1,
+                                multiprocessing_context=get_context('loky'))
+        for batch, images_batch in enumerate(dataloader):
+            images_batch = images_batch.permute(0, 3, 1,
+                                                2)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
+
+            image_features = self.model.extract_features(images_batch.to(self.device))
+
+            if batch == 0:
+                x = image_features
+            else:
+                x = torch.cat((x, image_features), dim=0)
+        x = nn.Flatten()(x).to('cpu')
+        x = torch.cat((x, metadata), dim=1)
         x = x.numpy()
         self.head.fit(x, y)
 
     def predict(self, X):
-        images, metadata = torch.from_numpy(X[0]), torch.from_numpy(X[1])
+        images, metadata = torch.from_numpy(X[0]), X[1]
         images = images.permute(0, 3, 1, 2).to(
             self.device)  # Permute from (Batch_size,IMG_SIZE,IMG_SIZE,CHANNELS) To (Batch_size,CHANNELS,IMG_SIZE,IMG_SIZE)
-        x = self.model.extract_features(images.float())
-        x = nn.Flatten()(x)
-        X = torch.cat((x.to('cpu'), metadata), dim=1)
+        x = self.model.extract_features(images)
+        x = nn.Flatten()(x).to('cpu')
+        X = torch.cat((x, metadata.to('cpu')), dim=1)
         X = X.numpy()
         temp = self.head.predict(X)
         return temp
@@ -256,54 +280,6 @@ class EffnetModel(nn.Module):
         x = nn.ReLU()(x)
         x = self.output_layer(x)
         return x
-
-
-def load_train_data(img_size=256) -> tuple:
-    """ Returns training set as list of (x,y) tuples
-    where x = (resized_image, metadata)
-    """
-    train_metadata = pd.read_csv('train.csv')
-    img_ids = train_metadata['Id']
-    if debugging:
-        n_debug_images = 50
-        img_data = np.zeros((n_debug_images, img_size, img_size, 3), dtype=np.single)
-    else:
-        img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3), dtype=np.single)
-    metadata = train_metadata.iloc[:, 1:-1].values
-    y = train_metadata.iloc[:, -1].values
-
-    for idx, img_id in enumerate(tqdm(img_ids)):
-        if debugging and idx >= n_debug_images:
-            break
-        img_array = cv2.imread(f'train/{img_id}.jpg')
-        img_array = cv2.resize(img_array, (img_size, img_size)) / 255
-        img_data[idx, :, :, :] = img_array
-    img_data = img_data
-    metadata = torch.tensor(metadata.astype(np.single))
-    y = torch.tensor(y.astype(np.single))
-
-    if debugging:
-        metadata = metadata[:n_debug_images]
-        y = y[:n_debug_images]
-
-    return img_data, metadata, y
-
-
-def load_test_data(img_size=256) -> tuple:
-    """ Returns test set as list of (x,y) tuples
-    where x = (resized_image, metadata)
-    """
-    test_metadata = pd.read_csv('test.csv')
-    img_ids = test_metadata['Id']
-    img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))
-    metadata = test_metadata.iloc[:, 1:].values
-
-    for idx, img_id in enumerate(tqdm(img_ids)):
-        img_array = cv2.imread(f'test/{img_id}.jpg')
-        img_array = cv2.resize(img_array, (img_size, img_size)) / 255
-        img_data[idx, :, :, :] = img_array
-
-    return img_ids, img_data, metadata
 
 
 def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
@@ -403,6 +379,73 @@ def score(X_train, y_train, X_validation, y_validation, model) -> float:
     val_rmse = sqrt(mean_squared_error(y_true=y_validation, y_pred=y_pred))
     val_r2 = r2_score(y_validation, y_pred)
     return val_rmse, val_r2
+
+
+def load_train_data(img_size=256) -> tuple:
+    """ Returns training set as list of (x,y) tuples
+    where x = (resized_image, metadata)
+    """
+    train_metadata = pd.read_csv('train.csv')
+    img_ids = train_metadata['Id']
+    if debugging:
+        n_debug_images = 50
+        img_data = np.zeros((n_debug_images, img_size, img_size, 3), dtype=np.single)
+    else:
+        img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3), dtype=np.single)
+    metadata = train_metadata.iloc[:, 1:-1].values
+    y = train_metadata.iloc[:, -1].values
+
+    for idx, img_id in enumerate(tqdm(img_ids)):
+        if debugging and idx >= n_debug_images:
+            break
+        img_array = cv2.imread(f'train/{img_id}.jpg')
+        img_array = cv2.resize(img_array, (img_size, img_size)) / 255
+        img_data[idx, :, :, :] = img_array
+    img_data = img_data
+    metadata = torch.tensor(metadata.astype(np.single))
+    y = torch.tensor(y.astype(np.single))
+
+    if debugging:
+        metadata = metadata[:n_debug_images]
+        y = y[:n_debug_images]
+
+    return img_data, metadata, y
+
+
+def load_test_data(img_size=256) -> tuple:
+    """ Returns test set as list of (x,y) tuples
+    where x = (resized_image, metadata)
+    """
+    test_metadata = pd.read_csv('test.csv')
+    img_ids = test_metadata['Id']
+    img_data = np.zeros((img_ids.shape[0], img_size, img_size, 3))
+    metadata = test_metadata.iloc[:, 1:].values
+
+    for idx, img_id in enumerate(tqdm(img_ids)):
+        img_array = cv2.imread(f'test/{img_id}.jpg')
+        img_array = cv2.resize(img_array, (img_size, img_size)) / 255
+        img_data[idx, :, :, :] = img_array
+
+    return img_ids, img_data, metadata
+
+
+class ShallowModelDataset(torch.utils.data.Dataset):
+    def __init__(self, images, augmentations=None):
+        self.images = images
+        self.augmentations = augmentations
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image = self.images[idx]
+        # cv2.imshow('before_augmentation', image)
+        # cv2.waitKey(0)
+        if self.augmentations is not None:
+            image = self.augmentations(image=image)['image']
+            # cv2.imshow('image_augmentation', image)
+            # cv2.waitKey(0)
+        return image
 
 
 def save_dict_to_file(dictionary, path, txt_name='hyperparameter_dict'):

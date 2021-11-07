@@ -24,7 +24,7 @@ if __name__ == '__main__':
     torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if debugging:
-        print("Debugging!!!")
+        print("Debugging!")
     print(f"Using device: {device}")
 
     # Log directory
@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
             if self.augmentations is not None:
                 img_data_batch = self.augmentations(image=img_data_batch)['image']
-
+                
             return img_data_batch, metadata_batch, y_batch
 
 
