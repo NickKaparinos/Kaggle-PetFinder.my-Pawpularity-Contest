@@ -12,11 +12,14 @@ In this competition, raw images and metadata are analyzed for every sample to pr
 The dataset consists of 9912 samples. Each sample corresponds to a unique pet and consists of an image and 12 metadata features.
 
 ## Approaches
-Three approaches were followed. Each approach uses both the image and the metadata for each sample in order to achieve optimal performace. Each model was tuned using Optuna\`s Bayesian Hyperparameter tuning.
+Three approaches were followed. Each approach consists of different Neural Network architectures and makes use of both the image and the metadata for each sample, in order to achieve optimal performace. Each model was tuned using Optuna\`s Bayesian Hyperparameter tuning.
 
 
 ## Aproach 1: CNN Encoder + Shallow Reggresion Head
+<p align="center"><img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/pawpularity_shallow.png" alt="drawing" width="1000"/>
 
 ## Aproach 2: CNN Encoder + MLP Head
+<p align="center"><img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/pawpularity_mlp.png" alt="drawing" width="1000"/>
 
 ## Aproach 3: Swin Visual Transformer + MLP Head
+<p align="center"><img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/pawpularity_swin.png" alt="drawing" width="1000"/>
