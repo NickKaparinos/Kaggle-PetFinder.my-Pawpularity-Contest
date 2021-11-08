@@ -24,7 +24,7 @@ from copy import deepcopy
 from math import sqrt
 import albumentations as A
 
-debugging = True
+debugging = False
 
 
 def define_objective(regressor, img_data, metadata, y, kfolds, device):
@@ -82,7 +82,7 @@ def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes,
         validation_dataloaders = []
         optimizers = []
         learning_rate = 1e-3
-        batch_size = 2
+        batch_size = 64
         augmentations = A.Compose(
             [A.HueSaturationValue(hue_shift_limit=0.15, sat_shift_limit=0.15, val_shift_limit=0.15, p=0.5),
              A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1), contrast_limit=(-0.1, 0.1), p=1),
@@ -96,8 +96,6 @@ def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes,
         # Models
         model_list, name, hyperparameters = create_models(model_type=model_type, trial=trial, k_folds=k_folds,
                                                           device=device)
-        # config = hyperparameters | {'img_size': img_size, 'epochs': epochs, 'learning_rate': learning_rate,
-        #                             'batch_size': batch_size}
         config = dict(hyperparameters,
                       **{'img_size': img_size, 'epochs': epochs, 'learning_rate': learning_rate,
                          'batch_size': batch_size})
@@ -112,10 +110,10 @@ def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes,
             # Dataloders
             training_dataloaders.append(
                 DataLoader(dataset=training_dataset, batch_size=batch_size, shuffle=True, num_workers=1,
-                           prefetch_factor=1))
+                           prefetch_factor=2))
             validation_dataloaders.append(
                 DataLoader(dataset=validation_dataset, batch_size=batch_size, shuffle=True, num_workers=1,
-                           prefetch_factor=1))
+                           prefetch_factor=2))
             optimizers.append(torch.optim.Adam(model_list[fold].parameters(), lr=learning_rate))
 
         for epoch in tqdm(range(epochs)):
@@ -125,18 +123,23 @@ def define_objective_neural_net(img_size, y, k_folds, epochs, model_type, notes,
             val_r2_list = []
             for fold in range(k_folds):
                 train_rmse, train_r2 = pytorch_train_loop(training_dataloaders[fold], model_list[fold], loss_fn,
-                                                          optimizers[fold], epoch, device)
+                                                          optimizers[fold], epoch, fold, device)
                 val_rmse, val_r2 = pytorch_test_loop(validation_dataloaders[fold], model_list[fold], loss_fn, epoch,
-                                                     device)
+                                                     fold, device)
                 val_rmse_list.append(val_rmse)
                 val_r2_list.append(val_r2)
                 train_rmse_list.append(train_rmse)
                 train_r2_list.append(train_r2)
+            # Log
             val_average_rmse = mean(val_rmse_list)
+            training_rmse = {f'Training RMSE {i}': train_rmse_list[i] for i in range(len(train_rmse_list))}
+            training_r2 = {f'Training R2 {i}': train_r2_list[i] for i in range(len(train_r2_list))}
+            validation_rmse = {f'Validation RMSE {i}': val_rmse_list[i] for i in range(len(val_rmse_list))}
+            validation_r2 = {f'Validation R2 {i}': val_r2_list[i] for i in range(len(val_r2_list))}
             wandb.log(data={'Epoch': epoch, 'Mean Training RMSE': mean(train_rmse_list),
                             'Mean Training R2': mean(train_r2_list), 'Mean Validation RMSE': val_average_rmse,
-                            'Folds Validation RMSE': val_rmse_list, 'Mean Validation R2': mean(val_r2_list),
-                            'Fold Validation R2': val_r2_list})
+                            'Mean Validation R2': mean(val_r2_list), **training_rmse, **training_r2, **validation_rmse,
+                            **validation_r2})
             # Pruning
             trial.report(val_average_rmse, epoch)
             if trial.should_prune():
@@ -197,7 +200,7 @@ class SKlearnWrapper():
 
 
 class SwinOptunaHypermodel(nn.Module):
-    def __init__(self, n_linear_layers, n_neurons, p, input_channels=3):
+    def __init__(self, n_linear_layers, n_neurons, p):
         super().__init__()
         self.swin = timm.create_model('swin_base_patch4_window7_224', pretrained=True)
         self.swin.patch_embed = timm.models.layers.patch_embed.PatchEmbed(patch_size=4, embed_dim=128,
@@ -272,17 +275,14 @@ class EffnetModel(nn.Module):
         images, metadata = x
         x = self.model.extract_features(images)
         x = nn.Flatten()(x)
-        # print(f'x shape before: {x.shape}')
-        # print(f'metadata shape before: {metadata.shape}')
         x = torch.cat((x, metadata), dim=1)
-        # print(f'x shape after: {x.shape}')
         x = self.fc1(x)
         x = nn.ReLU()(x)
         x = self.output_layer(x)
         return x
 
 
-def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, device) -> tuple:
+def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, fold, device) -> tuple:
     model.train()
     running_loss = 0.0
     y_list = []
@@ -306,7 +306,7 @@ def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, device) -> 
 
         running_loss += loss.item()
         if batch % 100 == 0:
-            wandb.log(data={'Epoch': epoch, 'Training_loss': running_loss / 100})
+            wandb.log(data={'Epoch': epoch, f'Training_loss_{fold}': running_loss / 100})
             running_loss = 0.0
 
     # Calculate and save metrics
@@ -315,7 +315,7 @@ def pytorch_train_loop(dataloader, model, loss_fn, optimizer, epoch, device) -> 
     return train_rmse, train_r2
 
 
-def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
+def pytorch_test_loop(dataloader, model, loss_fn, epoch, fold, device) -> tuple:
     model.eval()
     running_loss = 0.0
     y_list = []
@@ -335,7 +335,7 @@ def pytorch_test_loop(dataloader, model, loss_fn, epoch, device) -> tuple:
 
             running_loss += loss.item()
             if batch % 100 == 0:
-                wandb.log(data={'Epoch': epoch, 'Validation_loss': running_loss / 100})
+                wandb.log(data={'Epoch': epoch, f'Validation_loss_{fold}': running_loss / 100})
                 running_loss = 0.0
 
     # Calculate and save metrics

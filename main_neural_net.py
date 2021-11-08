@@ -67,7 +67,7 @@ if __name__ == '__main__':
     study = optuna.create_study(sampler=optuna.samplers.TPESampler(seed=seed), study_name=study_name,
                                 direction='minimize', pruner=optuna.pruners.HyperbandPruner(),
                                 storage=f'sqlite:///{LOG_DIR}{study_name}.db', load_if_exists=True)
-    study.optimize(objective, n_trials=25, timeout=3600 * 24)
+    study.optimize(objective, n_trials=12, timeout=3600 * 14)
     print(f'Best hyperparameters: {study.best_params}')
     print(f'Best value: {study.best_value}')
 
