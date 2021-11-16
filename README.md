@@ -21,5 +21,28 @@ Three approaches were followed. Each approach consists of different Neural Netwo
 ## Aproach 2: CNN Encoder + MLP Head
 <p align="center"><img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/pawpularity_mlp.png" alt="drawing" width="1000"/>
 
+
 ## Aproach 3: Swin Visual Transformer + MLP Head
 <p align="center"><img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/pawpularity_swin.png" alt="drawing" width="1000"/>
+  
+
+### Hyperparameter tuning results
+<p float="left">
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/contour.png" width="49.5%" /> 
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/param_importances.png" width="49.5%" />
+</p>
+
+## EfficientNet-B3 GradCam++ examples
+Over the last decade, Convolutional Neural Network (CNN) models have been highly successful in solving complex vision problems. However, these deep models are perceived as "black box" methods considering the lack of understanding of their internal functioning. Grad-CAM++ can provide visual explanations of CNN model predictions.
+
+<p float="left">
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_0_plusplus.png" width="33%" /> 
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_1_plusplus.png" width="33%" />
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_2_plusplus.png" width="33%" />
+</p>
+
+<p float="left">
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_6_plusplus.png" width="33%" /> 
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_7_plusplus.png" width="33%" />
+  <img src="https://github.com/NickKaparinos/Kaggle-PetFinder.my-Pawpularity-Contest/blob/master/images/image_8_plusplus.png" width="33%" />
+</p>
