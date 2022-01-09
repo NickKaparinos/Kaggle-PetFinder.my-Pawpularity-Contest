@@ -28,12 +28,6 @@ if __name__ == '__main__':
     if debugging:
         print("Debugging!!!")
 
-    # Timm and swin transformer
-    # model_names = timm.list_models(pretrained=True)
-    # pprint(model_names)
-    # all_swin_models = timm.list_models('*swin*')
-    # pprint(all_swin_models)
-
     # Log directory
     time_stamp = str(time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()))
     LOG_DIR = 'logs/swin' + time_stamp + '/'
