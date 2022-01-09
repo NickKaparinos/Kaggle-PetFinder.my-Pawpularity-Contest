@@ -39,16 +39,6 @@ if __name__ == '__main__':
 
     # Regressor head
     regressor = DecisionTreeRegressor(random_state=0)
-    # regressor = RandomForestregressor(random_state=0)
-    # regressor = Baggingregressor(base_estimator=DecisionTreeregressor(random_state=0), random_state=0)
-    # regressor = LogisticRegression(random_state=0)
-    # regressor = SVC(random_state=0)
-    # regressor = KNeighborsregressor()
-    # regressor = MLPregressor(random_state=0)
-    # regressor = GaussianNB()
-    # regressor = AdaBoostregressor(base_estimator=DecisionTreeregressor(random_state=0),
-    #                                 random_state=0)
-    # regressor = GradientBoostingregressor(random_state=0)
 
     # Hyperparameter optimisation
     study_name = f'cnn_study_{time_stamp}'
