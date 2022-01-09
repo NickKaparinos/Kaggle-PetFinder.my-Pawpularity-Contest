@@ -267,7 +267,6 @@ class EffnetModel(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
         self.fc1 = nn.LazyLinear(256)
-        # self.fc1 = nn.Linear(1292, 256)
         self.fc2 = nn.Linear(256, 256)
         self.output_layer = nn.Linear(256, 1)
 
