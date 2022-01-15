@@ -24,7 +24,6 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = 'cpu'
     if debugging:
         print("Debugging!")
     print(f"Using device: {device}")
