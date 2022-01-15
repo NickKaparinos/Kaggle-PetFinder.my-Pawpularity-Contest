@@ -25,7 +25,6 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = 'cpu'
     print(f"Using device: {device}")
     makedirs('logs/grad_cam', exist_ok=True)
 
@@ -51,9 +50,6 @@ if __name__ == '__main__':
         # Visualize
         test_image = test_image[0].permute(1, 2, 0).numpy()
         visualization = show_cam_on_image(test_image, grayscale_cam, use_rgb=False)
-
-        # cv2.imshow(f'visualization_{i}', visualization)
-        # cv2.waitKey(0)
 
         cv2.imwrite('logs/grad_cam/'+f'image_{i}_plusplus.png', visualization)
 
